@@ -10,6 +10,12 @@ const run = () => {
     assert.ok(!result.includes('```svg'), 'Should NOT contain raw fence marker')
     assert.ok(result.includes('before'), 'Should preserve content before block')
     assert.ok(result.includes('after'), 'Should preserve content after block')
+    // 按钮存在
+    assert.ok(result.includes('svg-actions'), 'Should contain svg-actions wrapper')
+    assert.ok(result.includes('svg-copy-btn'), 'Should contain copy button')
+    assert.ok(result.includes('svg-png-btn'), 'Should contain PNG button')
+    assert.ok(result.includes('复制 SVG'), 'Should contain copy text')
+    assert.ok(result.includes('复制为 PNG'), 'Should contain PNG text')
     console.log('T1 Basic backtick fence: PASS')
   }
 
@@ -30,6 +36,7 @@ const run = () => {
     assert.equal(lines.length, 1, 'Should be compressed to single line')
     assert.ok(result.includes('svg-inline-render'), 'Should contain wrapper')
     assert.ok(result.includes('<stop offset="0%"/><stop offset="100%"/>'), 'Blank lines should be removed between tags')
+    assert.ok(result.includes('svg-copy-btn'), 'Buttons should be inside single-line output')
     console.log('T3 Blank lines compressed: PASS')
   }
 
@@ -63,6 +70,8 @@ const run = () => {
     const result = renderSvgBlocks('```svg\n<svg id="1"/>\n```\ntext\n```svg\n<svg id="2"/>\n```')
     const matches = result.match(/svg-inline-render/g)
     assert.equal(matches ? matches.length : 0, 2, 'Should convert both SVG blocks')
+    const btnMatches = result.match(/svg-copy-btn/g)
+    assert.equal(btnMatches ? btnMatches.length : 0, 2, 'Each SVG block should have buttons')
     assert.ok(result.includes('text'), 'Should preserve text between blocks')
     console.log('T7 Multiple SVG blocks: PASS')
   }
@@ -129,11 +138,28 @@ const run = () => {
   {
     const result = renderSvgBlocks('```svg\n<svg><!-- comment --><circle/></svg>\n```')
     assert.ok(result.includes('svg-inline-render'), 'SVG with HTML comments should be converted')
+    assert.ok(result.includes('svg-copy-btn'), 'Buttons should be present')
     assert.ok(result.includes('<!-- comment -->'), 'Should preserve HTML comments')
     console.log('T15 SVG with HTML comments: PASS')
   }
 
-  console.log('\nAll 15 tests passed!')
+  // 16. Action buttons are present in complete SVG blocks
+  {
+    const result = renderSvgBlocks('```svg\n<svg viewBox="0 0 100 50"><circle/></svg>\n```')
+    assert.ok(result.includes('svg-actions'), 'Should contain svg-actions wrapper')
+    assert.ok(result.includes('svg-copy-btn'), 'Should contain copy button')
+    assert.ok(result.includes('svg-png-btn'), 'Should contain PNG button')
+    assert.ok(result.includes('type="button"'), 'Buttons should have type="button"')
+    assert.ok(result.includes('复制 SVG'), 'Copy button should have Chinese label')
+    assert.ok(result.includes('复制为 PNG'), 'PNG button should have Chinese label')
+    // 按钮在 svg 之前（渲染层在上方）
+    const actionsIdx = result.indexOf('svg-actions')
+    const svgIdx = result.indexOf('<svg ')
+    assert.ok(actionsIdx < svgIdx, 'Buttons wrapper should appear before SVG element')
+    console.log('T16 Action buttons structure: PASS')
+  }
+
+  console.log('\nAll 16 tests passed!')
 }
 
 run()

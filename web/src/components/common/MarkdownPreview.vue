@@ -6,6 +6,7 @@
       { 'is-dark': themeStore.isDark, 'is-compact': compact }
     ]"
     v-html="renderedMarkdown"
+    @click="handleSvgAction"
   ></div>
 </template>
 
@@ -48,6 +49,101 @@ watch(
   },
   { immediate: true }
 )
+
+// === SVG 操作按钮事件委托 ===
+const handleSvgAction = async (e) => {
+  const btn = e.target.closest('.svg-copy-btn, .svg-png-btn')
+  if (!btn) return
+
+  const container = btn.closest('.svg-inline-render')
+  const svgEl = container?.querySelector('svg')
+  if (!svgEl) return
+
+  if (btn.classList.contains('svg-copy-btn')) {
+    await copySvgText(svgEl, btn)
+  } else if (btn.classList.contains('svg-png-btn')) {
+    await copySvgAsPng(svgEl, btn)
+  }
+}
+
+// 复制 SVG 源代码
+const copySvgText = async (svgEl, btn) => {
+  try {
+    await navigator.clipboard.writeText(svgEl.outerHTML)
+    showCopiedFeedback(btn)
+  } catch (err) {
+    console.error('复制 SVG 失败:', err)
+  }
+}
+
+// 复制为 PNG 图片
+const copySvgAsPng = async (svgEl, btn) => {
+  const svgContent = svgEl.outerHTML
+  const blob = new Blob([svgContent], { type: 'image/svg+xml' })
+  const url = URL.createObjectURL(blob)
+
+  try {
+    // 三级递进尺寸策略：
+    // 1) viewBox 固有坐标尺寸（最佳品质，不受 CSS 缩放影响）
+    let width, height
+    const vb = svgEl.viewBox
+    if (vb && vb.baseVal && vb.baseVal.width && vb.baseVal.height) {
+      width = vb.baseVal.width
+      height = vb.baseVal.height
+    }
+
+    // 2) 客户端渲染尺寸（SVG 在 DOM 中一定可获取）
+    if (!width || !height) {
+      const rect = svgEl.getBoundingClientRect()
+      width = rect.width
+      height = rect.height
+    }
+
+    // 3) 回退
+    if (!width || !height) { width = 800; height = 600 }
+
+    const img = await new Promise((resolve, reject) => {
+      const image = new Image()
+      image.onload = () => resolve(image)
+      image.onerror = reject
+      image.src = url
+    })
+
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext('2d')
+    // 不填充背景色 — Canvas 默认为全透明
+    // 背景色由 SVG 自身决定
+    ctx.drawImage(img, 0, 0, width, height)
+
+    const pngBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
+    if (pngBlob) {
+      await navigator.clipboard.write([
+        new ClipboardItem({ 'image/png': pngBlob })
+      ])
+      showCopiedFeedback(btn)
+    }
+  } catch (err) {
+    console.error('复制为 PNG 失败:', err)
+    // fallback: 尝试复制 SVG 源码
+    try {
+      await navigator.clipboard.writeText(svgContent)
+      console.log('PNG 复制失败，已回退复制 SVG 源码')
+    } catch {}
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
+
+// 反馈：按钮文字短暂变为「已复制」
+const showCopiedFeedback = (btn) => {
+  const originalText = btn.textContent
+  btn.textContent = '已复制'
+  setTimeout(() => {
+    btn.textContent = originalText
+  }, 1500)
+}
 </script>
 
 <style lang="less">
@@ -336,6 +432,7 @@ watch(
   }
 
   .svg-inline-render {
+    position: relative;
     max-width: 100%;
     height: auto;
     overflow: auto;
@@ -345,11 +442,56 @@ watch(
       max-width: 100%;
       height: auto;
     }
+
+    .svg-actions {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      z-index: 10;
+      display: none;
+      gap: 4px;
+
+      .svg-action-btn {
+        display: inline-flex;
+        align-items: center;
+        padding: 3px 8px;
+        border: 1px solid var(--gray-200);
+        border-radius: 4px;
+        background: var(--gray-0);
+        color: var(--gray-700);
+        font-size: 12px;
+        line-height: 1.5;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        white-space: nowrap;
+        user-select: none;
+
+        &:hover {
+          background: var(--gray-100);
+          color: var(--gray-900);
+        }
+      }
+    }
+
+    &:hover .svg-actions {
+      display: inline-flex;
+    }
   }
 
   &.is-dark .svg-inline-render {
     background: rgba(255, 255, 255, 0.03);
     border-radius: 4px;
+  }
+
+  &.is-dark .svg-actions .svg-action-btn {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.12);
+    color: var(--gray-300);
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.15);
+      color: var(--gray-100);
+    }
   }
 }
 </style>

@@ -44,7 +44,13 @@ export function renderSvgBlocks(markdown) {
             .replace(/>\s+</g, '><')
             .replace(/\s{2,}/g, ' ')
             .trim()
-          output.push(`<div class="svg-inline-render">${singleLine}</div>`)
+          const actionsHtml = [
+            `<div class="svg-actions">`,
+            `<button class="svg-action-btn svg-copy-btn" type="button">复制 SVG</button>`,
+            `<button class="svg-action-btn svg-png-btn" type="button">复制为 PNG</button>`,
+            `</div>`
+          ].join('')
+          output.push(`<div class="svg-inline-render">${actionsHtml}${singleLine}</div>`)
           i++
           break
         }
