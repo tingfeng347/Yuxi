@@ -347,7 +347,7 @@ class KnowledgeBaseManager:
             kb_type: 知识库类型，默认为lightrag
             embed_info: 嵌入模型信息
             share_config: 共享配置
-            **kwargs: 其他配置参数，包括chunk_size和chunk_overlap
+            **kwargs: 其他配置参数
 
         Returns:
             数据库信息字典
@@ -514,21 +514,6 @@ class KnowledgeBaseManager:
         """获取文件完整信息（基本信息+内容信息）- 保持向后兼容"""
         kb_instance = await self._get_kb_for_database(db_id)
         return await kb_instance.get_file_info(db_id, file_id)
-
-    def get_db_upload_path(self, db_id: str | None = None) -> str:
-        """获取数据库上传路径"""
-        if db_id:
-            try:
-                kb_instance = self._get_kb_for_database_sync(db_id)
-                return kb_instance.get_db_upload_path(db_id)
-            except KBNotFoundError:
-                # 如果数据库不存在，创建通用上传路径
-                pass
-
-        # 通用上传路径
-        general_uploads = os.path.join(self.work_dir, "uploads")
-        os.makedirs(general_uploads, exist_ok=True)
-        return general_uploads
 
     async def file_name_existed_in_db(self, db_id: str | None, file_name: str | None) -> bool:
         """检查指定数据库中是否存在同名的文件"""

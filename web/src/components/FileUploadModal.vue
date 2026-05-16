@@ -77,7 +77,7 @@
             </div>
             <div class="setting-content">
               <a-select
-                v-model:value="chunkParams.enable_ocr"
+                v-model:value="processingParams.ocr_engine"
                 :options="enableOcrOptions"
                 style="width: 100%"
                 class="ocr-select"
@@ -293,7 +293,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, h } from 'vue'
 import { message, Upload, Modal } from 'ant-design-vue'
 import { useUserStore } from '@/stores/user'
 import { useDatabaseStore } from '@/stores/database'
@@ -313,7 +313,7 @@ import {
   ChevronDown,
   ChevronUp
 } from 'lucide-vue-next'
-import { h } from 'vue'
+import { buildChunkParamsPayload } from '@/utils/chunk_presets'
 import ChunkParamsConfig from '@/components/ChunkParamsConfig.vue'
 
 const props = defineProps({
@@ -687,34 +687,23 @@ const ocrHealthStatus = ref({
 // OCR健康检查状态
 const ocrHealthChecking = ref(false)
 
-// 分块参数
-const chunkParams = ref({
-  enable_ocr: 'disable'
+// 解析参数
+const processingParams = ref({
+  ocr_engine: 'disable',
+  ocr_engine_config: {}
 })
 
 // 自动入库相关
 const autoIndex = ref(false)
 const indexParams = ref({
-  chunk_size: 1000,
-  chunk_overlap: 200,
-  qa_separator: '',
-  chunk_preset_id: ''
+  chunk_preset_id: '',
+  chunk_parser_config: {}
 })
 
 const buildAutoIndexParams = () => {
-  const payload = {}
-  if (indexParams.value.chunk_preset_id) {
-    payload.chunk_preset_id = indexParams.value.chunk_preset_id
-  }
-
-  if (isGraphBased.value) {
-    payload.qa_separator = indexParams.value.qa_separator || ''
-    return payload
-  }
-  return {
-    ...indexParams.value,
-    ...payload
-  }
+  return buildChunkParamsPayload(indexParams.value, {
+    includeSizeOverlap: !isGraphBased.value
+  })
 }
 
 const isGraphBased = computed(() => {
@@ -726,7 +715,7 @@ const isFolderUpload = ref(false)
 
 // 计算属性：是否启用了OCR
 const isOcrEnabled = computed(() => {
-  return chunkParams.value.enable_ocr !== 'disable'
+  return processingParams.value.ocr_engine !== 'disable'
 })
 
 // 上传模式切换相关逻辑已移除
@@ -828,7 +817,7 @@ const enableOcrOptions = computed(() => [
 
 // 获取当前选中OCR服务的状态
 const selectedOcrStatus = computed(() => {
-  switch (chunkParams.value.enable_ocr) {
+  switch (processingParams.value.ocr_engine) {
     case 'rapid_ocr':
       return ocrHealthStatus.value?.rapid_ocr?.status || 'unknown'
     case 'mineru_ocr':
@@ -846,7 +835,7 @@ const selectedOcrStatus = computed(() => {
 
 // 获取当前选中OCR服务的状态消息
 const selectedOcrMessage = computed(() => {
-  switch (chunkParams.value.enable_ocr) {
+  switch (processingParams.value.ocr_engine) {
     case 'rapid_ocr':
       return ocrHealthStatus.value?.rapid_ocr?.message || ''
     case 'mineru_ocr':
@@ -887,7 +876,7 @@ const getDeepSeekOcrLabel = () => getOcrLabel('deepseek_ocr', 'DeepSeek OCR')
 
 // 验证OCR服务可用性
 const validateOcrService = () => {
-  if (chunkParams.value.enable_ocr === 'disable') {
+  if (!isOcrEnabled.value) {
     return true
   }
 
@@ -1258,7 +1247,7 @@ const chunkData = async () => {
 
     try {
       store.state.chunkLoading = true
-      const params = { ...chunkParams.value }
+      const params = { ...processingParams.value }
       if (autoIndex.value) {
         params.auto_index = true
         Object.assign(params, buildAutoIndexParams())
@@ -1320,7 +1309,7 @@ const chunkData = async () => {
 
     // 检查是否需要OCR
     const ext = file_path.substring(file_path.lastIndexOf('.')).toLowerCase()
-    if (imageExtensions.includes(ext) && chunkParams.value.enable_ocr === 'disable') {
+    if (imageExtensions.includes(ext) && !isOcrEnabled.value) {
       message.error({
         content: '检测到图片文件，必须启用 OCR 才能提取文本内容。',
         duration: 5
@@ -1336,7 +1325,7 @@ const chunkData = async () => {
 
   try {
     store.state.chunkLoading = true
-    const params = { ...chunkParams.value, content_hashes }
+    const params = { ...processingParams.value, content_hashes }
     if (autoIndex.value) {
       params.auto_index = true
       Object.assign(params, buildAutoIndexParams())

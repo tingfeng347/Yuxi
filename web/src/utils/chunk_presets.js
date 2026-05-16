@@ -41,3 +41,44 @@ export const CHUNK_PRESET_DESCRIPTION_MAP = Object.fromEntries(
 
 export const getChunkPresetDescription = (presetId) =>
   CHUNK_PRESET_DESCRIPTION_MAP[presetId] || CHUNK_PRESET_DESCRIPTION_MAP.general
+
+export const isPlainObject = (value) =>
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+
+export const buildChunkParserConfigPayload = (source, { includeSizeOverlap = true } = {}) => {
+  if (!isPlainObject(source)) {
+    return {}
+  }
+
+  const config = {}
+  if (includeSizeOverlap) {
+    if (source.chunk_token_num !== undefined && source.chunk_token_num !== null) {
+      config.chunk_token_num = source.chunk_token_num
+    }
+    if (source.overlapped_percent !== undefined && source.overlapped_percent !== null) {
+      config.overlapped_percent = source.overlapped_percent
+    }
+  }
+  if (source.delimiter) {
+    config.delimiter = source.delimiter
+  }
+
+  return config
+}
+
+export const buildChunkParamsPayload = (source, options = {}) => {
+  if (!isPlainObject(source)) {
+    return {}
+  }
+
+  const payload = {}
+  const chunkParserConfig = buildChunkParserConfigPayload(source.chunk_parser_config, options)
+  if (Object.keys(chunkParserConfig).length > 0) {
+    payload.chunk_parser_config = chunkParserConfig
+  }
+  if (source.chunk_preset_id) {
+    payload.chunk_preset_id = source.chunk_preset_id
+  }
+
+  return payload
+}

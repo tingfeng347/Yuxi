@@ -12,10 +12,11 @@ from yuxi.knowledge.chunking.ragflow_like.presets import (
     CHUNK_ENGINE_VERSION,
     CHUNK_PRESET_IDS,
     get_chunk_preset_options,
+    get_default_chunk_parser_config,
     map_to_internal_parser_id,
     resolve_chunk_processing_params,
 )
-from yuxi.knowledge.utils.kb_utils import sanitize_processing_params
+from yuxi.knowledge.utils.kb_utils import resolve_processing_params, sanitize_processing_params
 
 
 def test_general_maps_to_naive() -> None:
@@ -30,20 +31,34 @@ def test_resolve_chunk_processing_params_priority() -> None:
         },
         file_processing_params={
             "chunk_preset_id": "qa",
-            "chunk_parser_config": {"delimiter": "###"},
+            "chunk_parser_config": {"delimiter": "###", "overlapped_percent": 5},
         },
         request_params={
             "chunk_preset_id": "laws",
             "chunk_parser_config": {"chunk_token_num": 666},
-            "chunk_size": 777,
         },
     )
 
     assert resolved["chunk_preset_id"] == "laws"
     assert resolved["chunk_engine_version"] == CHUNK_ENGINE_VERSION
-    # legacy chunk_size 在当前实现里会映射为 chunk_token_num
-    assert resolved["chunk_parser_config"]["chunk_token_num"] == 777
-    assert resolved["chunk_parser_config"]["delimiter"] == "###"
+    assert resolved["chunk_parser_config"] == {
+        "chunk_token_num": 666,
+        "delimiter": "###",
+        "overlapped_percent": 5,
+    }
+
+
+def test_resolve_chunk_processing_params_returns_only_nested_keys() -> None:
+    resolved = resolve_chunk_processing_params(
+        kb_additional_params={"chunk_parser_config": {"chunk_token_num": 300}},
+        file_processing_params={},
+        request_params={},
+    )
+
+    assert resolved["chunk_parser_config"] == {"chunk_token_num": 300}
+    assert resolved["chunk_preset_id"] == "general"
+    assert resolved["chunk_engine_version"] == CHUNK_ENGINE_VERSION
+    assert len(resolved) == 3
 
 
 def test_qa_chunking_from_markdown_headings() -> None:
@@ -119,6 +134,11 @@ def test_chunk_preset_options_include_description() -> None:
     options = get_chunk_preset_options()
     assert {option["value"] for option in options} == CHUNK_PRESET_IDS
     assert all(isinstance(option.get("description"), str) and option["description"] for option in options)
+
+
+def test_chunk_preset_defaults_only_include_strategy_specific_fields() -> None:
+    for preset_id in CHUNK_PRESET_IDS:
+        assert get_default_chunk_parser_config(preset_id) == {}
 
 
 def test_laws_chunking_should_apply_overlength_protection() -> None:
@@ -230,13 +250,67 @@ def test_laws_markdown_articles_should_not_collapse_into_chapter_chunk() -> None
     assert max(count_tokens(ck["content"]) for ck in chunks) <= 120
 
 
-def test_sanitize_processing_params_should_drop_batch_only_fields() -> None:
+def test_sanitize_processing_params_should_drop_non_persistent_fields() -> None:
     sanitized = sanitize_processing_params(
         {
             "chunk_preset_id": "general",
+            "chunk_parser_config": {"chunk_token_num": 300},
+            "ocr_engine": "mineru_ocr",
+            "ocr_engine_config": {},
+            "auto_index": True,
             "content_hashes": {"a.md": "hash-a"},
+            "enable_ocr": "mineru_ocr",
             "_preprocessed_map": {"a.md": {"path": "/tmp/a.md"}},
         }
     )
 
-    assert sanitized == {"chunk_preset_id": "general"}
+    assert sanitized == {
+        "chunk_preset_id": "general",
+        "chunk_parser_config": {"chunk_token_num": 300},
+        "ocr_engine": "mineru_ocr",
+        "ocr_engine_config": {},
+    }
+
+
+def test_resolve_processing_params_keeps_ocr_fields_and_chunk_params() -> None:
+    resolved = resolve_processing_params(
+        kb_additional_params={
+            "chunk_preset_id": "book",
+            "chunk_parser_config": {"delimiter": "\n", "chunk_token_num": 300},
+        },
+        file_processing_params={
+            "ocr_engine": "mineru_ocr",
+            "ocr_engine_config": {"backend": "pipeline"},
+            "chunk_preset_id": "qa",
+            "chunk_parser_config": {"overlapped_percent": 10},
+            "content_hashes": {"a.md": "hash-a"},
+        },
+        request_params={
+            "auto_index": True,
+            "chunk_preset_id": "laws",
+            "chunk_parser_config": {"chunk_token_num": 666},
+        },
+    )
+
+    assert resolved["ocr_engine"] == "mineru_ocr"
+    assert resolved["ocr_engine_config"] == {"backend": "pipeline"}
+    assert resolved["chunk_preset_id"] == "laws"
+    assert resolved["chunk_parser_config"] == {
+        "delimiter": "\n",
+        "chunk_token_num": 666,
+        "overlapped_percent": 10,
+    }
+    assert "content_hashes" not in resolved
+    assert "enable_ocr" not in resolved
+    assert "auto_index" not in resolved
+
+
+def test_resolve_processing_params_defaults_ocr_fields() -> None:
+    resolved = resolve_processing_params(
+        kb_additional_params={},
+        file_processing_params={"ocr_engine_config": "invalid", "enable_ocr": "mineru_ocr"},
+    )
+
+    assert resolved["ocr_engine"] == "disable"
+    assert resolved["ocr_engine_config"] == {}
+    assert "enable_ocr" not in resolved

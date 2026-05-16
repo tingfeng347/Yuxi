@@ -3,11 +3,8 @@ import os
 from abc import ABC, abstractmethod
 from typing import Any
 
-from yuxi.knowledge.chunking.ragflow_like.presets import (
-    ensure_chunk_defaults_in_additional_params,
-    resolve_chunk_processing_params,
-)
-from yuxi.knowledge.utils import sanitize_processing_params
+from yuxi.knowledge.chunking.ragflow_like.presets import ensure_chunk_defaults_in_additional_params
+from yuxi.knowledge.utils import resolve_processing_params, sanitize_processing_params
 from yuxi.utils import logger
 from yuxi.utils.datetime_utils import coerce_any_to_utc_datetime, utc_isoformat
 
@@ -100,7 +97,7 @@ class KnowledgeBase(ABC):
                 db_id = meta.get("database_id")
                 kb_additional_params = self.databases_meta.get(db_id, {}).get("metadata") or {}
                 normalized_meta = dict(meta)
-                normalized_meta["processing_params"] = resolve_chunk_processing_params(
+                normalized_meta["processing_params"] = resolve_processing_params(
                     kb_additional_params=kb_additional_params,
                     file_processing_params=meta.get("processing_params"),
                 )
@@ -213,7 +210,7 @@ class KnowledgeBase(ABC):
         metadata = await prepare_item_metadata(item, content_type, db_id, params=params)
         file_id = metadata["file_id"]
         kb_additional_params = self.databases_meta.get(db_id, {}).get("metadata") or {}
-        metadata["processing_params"] = resolve_chunk_processing_params(
+        metadata["processing_params"] = resolve_processing_params(
             kb_additional_params=kb_additional_params,
             file_processing_params=metadata.get("processing_params"),
         )
@@ -336,7 +333,7 @@ class KnowledgeBase(ABC):
 
         logger.debug(f"[update_file_params] file_id={file_id}, current_params={current_params}, new_params={params}")
 
-        current_params = resolve_chunk_processing_params(
+        current_params = resolve_processing_params(
             kb_additional_params=kb_additional_params,
             file_processing_params=current_params,
             request_params=params,
@@ -385,10 +382,10 @@ class KnowledgeBase(ABC):
 
     async def _read_markdown_from_minio(self, file_path: str) -> str:
         """Read markdown content from MinIO"""
-        from yuxi.knowledge.utils.kb_utils import parse_minio_url
+        from yuxi.knowledge.utils.kb_utils import is_minio_url, parse_minio_url
         from yuxi.storage.minio import get_minio_client
 
-        if not file_path.startswith(("http://", "https://")):
+        if not is_minio_url(file_path):
             raise ValueError(f"Invalid MinIO path format: {file_path}")
 
         bucket_name, object_name = parse_minio_url(file_path)
@@ -516,7 +513,7 @@ class KnowledgeBase(ABC):
             操作结果
         """
         if db_id in self.databases_meta:
-            from yuxi.knowledge.utils.kb_utils import parse_minio_url
+            from yuxi.knowledge.utils.kb_utils import is_minio_url, parse_minio_url
             from yuxi.repositories.knowledge_base_repository import KnowledgeBaseRepository
             from yuxi.storage.minio import get_minio_client
 
@@ -526,7 +523,7 @@ class KnowledgeBase(ABC):
             files_to_delete = [fid for fid, finfo in self.files_meta.items() if finfo.get("database_id") == db_id]
             for file_id in files_to_delete:
                 file_path = self.files_meta[file_id].get("path")
-                if file_path and file_path.startswith(("http://", "https://")):
+                if file_path and is_minio_url(file_path):
                     try:
                         bucket_name, object_name = parse_minio_url(file_path)
                         await minio_client.adelete_file(bucket_name, object_name)
@@ -1006,25 +1003,6 @@ class KnowledgeBase(ABC):
         """
         pass
 
-    def get_db_upload_path(self, db_id: str | None = None) -> str:
-        """
-        获取数据库上传路径
-
-        Args:
-            db_id: 数据库ID，可选
-
-        Returns:
-            上传路径
-        """
-        if db_id:
-            uploads_folder = os.path.join(self.work_dir, db_id, "uploads")
-            os.makedirs(uploads_folder, exist_ok=True)
-            return uploads_folder
-
-        general_uploads = os.path.join(self.work_dir, "uploads")
-        os.makedirs(general_uploads, exist_ok=True)
-        return general_uploads
-
     def update_database(self, db_id: str, name: str, description: str, llm_info: dict = None) -> dict:
         """
         更新数据库
@@ -1117,7 +1095,7 @@ class KnowledgeBase(ABC):
                     "size": record.file_size,
                     "content_type": record.content_type,
                     "processing_params": sanitize_processing_params(
-                        resolve_chunk_processing_params(
+                        resolve_processing_params(
                             kb_additional_params=kb_additional_params,
                             file_processing_params=record.processing_params,
                         )

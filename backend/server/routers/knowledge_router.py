@@ -16,7 +16,7 @@ from yuxi import config, knowledge_base
 from yuxi.knowledge.chunking.ragflow_like.presets import ensure_chunk_defaults_in_additional_params
 from yuxi.plugins.parser import Parser, SUPPORTED_FILE_EXTENSIONS, is_supported_file_extension
 from yuxi.knowledge.utils import calculate_content_hash
-from yuxi.knowledge.utils.kb_utils import parse_minio_url
+from yuxi.knowledge.utils.kb_utils import is_minio_url, parse_minio_url
 from yuxi.models.embed import test_all_embedding_models_status, test_embedding_model_status
 from yuxi.services.model_cache import is_v2_spec_format
 from yuxi.storage.postgres.models_business import User
@@ -61,6 +61,22 @@ media_types = {
     ".h": "text/x-chdr",
     ".hpp": "text/x-c++hdr",
 }
+
+
+async def _delete_document_storage_objects(db_id: str, doc_id: str, file_path: str) -> None:
+    minio_client = get_minio_client()
+
+    if is_minio_url(file_path):
+        try:
+            bucket_name, object_name = parse_minio_url(file_path)
+            await minio_client.adelete_file(bucket_name, object_name)
+        except Exception as minio_error:
+            logger.warning(f"从MinIO删除原始文件失败: {minio_error}")
+
+    try:
+        await minio_client.adelete_file(minio_client.KB_BUCKETS["parsed"], f"{db_id}/parsed/{doc_id}.md")
+    except Exception as minio_error:
+        logger.warning(f"从MinIO删除解析结果失败: {minio_error}")
 
 
 def _validate_dify_additional_params(additional_params: dict | None) -> dict:
@@ -327,31 +343,23 @@ async def add_documents(
     content_type = params.get("content_type", "file")
     # 自动入库参数
     auto_index = params.get("auto_index", False)
-    indexing_params = {
-        "chunk_size": params.get("chunk_size", 1000),
-        "chunk_overlap": params.get("chunk_overlap", 200),
-        "qa_separator": params.get("qa_separator", ""),
-        "chunk_preset_id": params.get("chunk_preset_id"),
-        "chunk_parser_config": params.get("chunk_parser_config"),
-    }
-    if not indexing_params.get("chunk_preset_id"):
-        indexing_params.pop("chunk_preset_id", None)
-    if not isinstance(indexing_params.get("chunk_parser_config"), dict):
-        indexing_params.pop("chunk_parser_config", None)
+    indexing_params = {}
+    chunk_preset_id = params.get("chunk_preset_id")
+    if chunk_preset_id:
+        indexing_params["chunk_preset_id"] = chunk_preset_id
+
+    chunk_parser_config = params.get("chunk_parser_config")
+    if isinstance(chunk_parser_config, dict):
+        indexing_params["chunk_parser_config"] = chunk_parser_config
 
     # URL 解析与入库（需白名单验证）
     if content_type == "url":
         raise HTTPException(status_code=400, detail="URL 处理方式已变更，请使用 fetch-url 接口先获取内容")
 
-    # 安全检查：验证文件路径
     if content_type == "file":
-        from yuxi.knowledge.utils.kb_utils import validate_file_path
-
         for item in items:
-            try:
-                validate_file_path(item, db_id)
-            except ValueError as e:
-                raise HTTPException(status_code=403, detail=str(e))
+            if not is_minio_url(item):
+                raise HTTPException(status_code=400, detail="File source must be a MinIO URL")
 
     async def run_ingest(context: TaskContext):
         await context.set_message("任务初始化")
@@ -703,16 +711,7 @@ async def batch_delete_documents(
 
             file_path = file_meta_info.get("meta", {}).get("path", "")
 
-            # 尝试从 MinIO 删除文件对象与解析结果
-            try:
-                minio_client = get_minio_client()
-                if file_path.startswith(("http://", "https://")):
-                    bucket_name, object_name = parse_minio_url(file_path)
-                    await minio_client.adelete_file(bucket_name, object_name)
-                await minio_client.adelete_file(minio_client.KB_BUCKETS["parsed"], f"{db_id}/parsed/{doc_id}.md")
-                logger.debug(f"成功从MinIO删除文件: {file_path}")
-            except Exception as minio_error:
-                logger.warning(f"从MinIO删除文件失败: {minio_error}")
+            await _delete_document_storage_objects(db_id, doc_id, file_path)
 
             # 无论MinIO删除是否成功，都继续从知识库删除
             await knowledge_base.delete_file(db_id, doc_id)
@@ -749,16 +748,7 @@ async def delete_document(db_id: str, doc_id: str, current_user: User = Depends(
 
         file_path = file_meta_info.get("meta", {}).get("path", "")
 
-        # 尝试从 MinIO 删除文件对象与解析结果
-        try:
-            minio_client = get_minio_client()
-            if file_path.startswith(("http://", "https://")):
-                bucket_name, object_name = parse_minio_url(file_path)
-                await minio_client.adelete_file(bucket_name, object_name)
-            await minio_client.adelete_file(minio_client.KB_BUCKETS["parsed"], f"{db_id}/parsed/{doc_id}.md")
-            logger.debug(f"成功从MinIO删除文件: {file_path}")
-        except Exception as minio_error:
-            logger.warning(f"从MinIO删除文件失败: {minio_error}")
+        await _delete_document_storage_objects(db_id, doc_id, file_path)
 
         # 无论MinIO删除是否成功，都继续从知识库删除
         await knowledge_base.delete_file(db_id, doc_id)
@@ -770,7 +760,7 @@ async def delete_document(db_id: str, doc_id: str, current_user: User = Depends(
 
 @knowledge.get("/databases/{db_id}/documents/{doc_id}/download")
 async def download_document(db_id: str, doc_id: str, request: Request, current_user: User = Depends(get_admin_user)):
-    """下载原始文件 - 根据path类型选择本地或MinIO下载"""
+    """下载原始文件"""
     logger.debug(f"Download document {doc_id} from {db_id}")
     await _ensure_database_not_dify(db_id, "文档下载")
     try:
@@ -799,102 +789,52 @@ async def download_document(db_id: str, doc_id: str, request: Request, current_u
         _, ext = os.path.splitext(decoded_filename)
         media_type = media_types.get(ext.lower(), "application/octet-stream")
 
-        # 根据path类型选择下载方式
-        from yuxi.knowledge.utils.kb_utils import is_minio_url
+        if not is_minio_url(file_path):
+            raise HTTPException(status_code=400, detail="文件路径必须是 MinIO URL")
 
-        if is_minio_url(file_path):
-            # MinIO下载
-            logger.debug(f"Downloading from MinIO: {file_path}")
+        logger.debug(f"Downloading from MinIO: {file_path}")
 
-            try:
-                # 使用通用函数解析MinIO URL
-                from yuxi.knowledge.utils.kb_utils import parse_minio_url
+        try:
+            bucket_name, object_name = parse_minio_url(file_path)
+            logger.debug(f"Parsed bucket_name: {bucket_name}, object_name: {object_name}")
 
-                bucket_name, object_name = parse_minio_url(file_path)
+            minio_client = get_minio_client()
 
-                logger.debug(f"Parsed bucket_name: {bucket_name}, object_name: {object_name}")
-
-                minio_client = get_minio_client()
-
-                # 直接使用解析出的完整对象名称下载
-                minio_response = await minio_client.adownload_response(
-                    bucket_name=bucket_name,
-                    object_name=object_name,
-                )
-                logger.debug(f"Successfully downloaded object: {object_name}")
-
-            except Exception as e:
-                logger.error(f"Failed to download MinIO file: {e}")
-                raise StorageError(f"下载文件失败: {e}")
-
-            # 创建流式生成器
-            async def minio_stream():
-                try:
-                    while True:
-                        chunk = await asyncio.to_thread(minio_response.read, 8192)
-                        if not chunk:
-                            break
-                        yield chunk
-                finally:
-                    minio_response.close()
-                    minio_response.release_conn()
-
-            # 创建StreamingResponse
-            response = StreamingResponse(
-                minio_stream(),
-                media_type=media_type,
+            # 直接使用解析出的完整对象名称下载
+            minio_response = await minio_client.adownload_response(
+                bucket_name=bucket_name,
+                object_name=object_name,
             )
-            # 正确处理中文文件名的HTTP头部设置
+            logger.debug(f"Successfully downloaded object: {object_name}")
+
+        except Exception as e:
+            logger.error(f"Failed to download MinIO file: {e}")
+            raise StorageError(f"下载文件失败: {e}")
+
+        # 创建流式生成器
+        async def minio_stream():
             try:
-                # 尝试使用ASCII编码（适用于英文文件名）
-                decoded_filename.encode("ascii")
-                # 如果成功，直接使用简单格式
-                response.headers["Content-Disposition"] = f'attachment; filename="{decoded_filename}"'
-            except UnicodeEncodeError:
-                # 如果包含非ASCII字符（如中文），使用RFC 2231格式
-                encoded_filename = quote(decoded_filename.encode("utf-8"))
-                response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{encoded_filename}"
+                while True:
+                    chunk = await asyncio.to_thread(minio_response.read, 8192)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                minio_response.close()
+                minio_response.release_conn()
 
-            return response
+        response = StreamingResponse(
+            minio_stream(),
+            media_type=media_type,
+        )
+        try:
+            decoded_filename.encode("ascii")
+            response.headers["Content-Disposition"] = f'attachment; filename="{decoded_filename}"'
+        except UnicodeEncodeError:
+            encoded_filename = quote(decoded_filename.encode("utf-8"))
+            response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{encoded_filename}"
 
-        else:
-            # 本地文件下载
-            logger.debug(f"Downloading from local filesystem: {file_path}")
-
-            if not os.path.exists(file_path):
-                raise StorageError(f"文件不存在: {file_path}")
-
-            # 获取文件大小
-            file_size = os.path.getsize(file_path)
-
-            # 创建文件流式生成器
-            async def file_stream():
-                async with aiofiles.open(file_path, "rb") as f:
-                    while True:
-                        chunk = await f.read(8192)
-                        if not chunk:
-                            break
-                        yield chunk
-
-            # 创建StreamingResponse
-            response = StreamingResponse(
-                file_stream(),
-                media_type=media_type,
-            )
-            # 正确处理中文文件名的HTTP头部设置
-            try:
-                # 尝试使用ASCII编码（适用于英文文件名）
-                decoded_filename.encode("ascii")
-                # 如果成功，直接使用简单格式
-                response.headers["Content-Disposition"] = f'attachment; filename="{decoded_filename}"'
-                response.headers["Content-Length"] = str(file_size)
-            except UnicodeEncodeError:
-                # 如果包含非ASCII字符（如中文），使用RFC 2231格式
-                encoded_filename = quote(decoded_filename.encode("utf-8"))
-                response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{encoded_filename}"
-                response.headers["Content-Length"] = str(file_size)
-
-            return response
+        return response
 
     except HTTPException:
         raise

@@ -22,8 +22,7 @@ from pymilvus import (
 from yuxi import config
 from yuxi.knowledge.base import FileStatus, KnowledgeBase
 from yuxi.knowledge.chunking.ragflow_like.dispatcher import chunk_markdown
-from yuxi.knowledge.chunking.ragflow_like.presets import resolve_chunk_processing_params
-from yuxi.knowledge.utils.kb_utils import get_embedding_config
+from yuxi.knowledge.utils.kb_utils import get_embedding_config, resolve_processing_params
 from yuxi.models.embed import OtherEmbedding
 from yuxi.plugins.parser.unified import Parser
 from yuxi.utils import hashstr, logger
@@ -63,10 +62,6 @@ class MilvusKB(KnowledgeBase):
 
         # 存储集合映射 {db_id: Collection}
         self.collections: dict[str, Any] = {}
-
-        # 分块配置
-        self.chunk_size = kwargs.get("chunk_size", 1000)
-        self.chunk_overlap = kwargs.get("chunk_overlap", 200)
 
         # 元数据锁
         self._metadata_lock = asyncio.Lock()
@@ -348,7 +343,7 @@ class MilvusKB(KnowledgeBase):
                 self.files_meta[file_id]["updated_by"] = operator_id
 
             # 将传入的 params 作为 request_params，确保用户指定的参数始终覆盖存储的参数
-            params = resolve_chunk_processing_params(
+            params = resolve_processing_params(
                 kb_additional_params=self.databases_meta.get(db_id, {}).get("metadata"),
                 file_processing_params=file_meta.get("processing_params"),
                 request_params=params,
@@ -370,9 +365,7 @@ class MilvusKB(KnowledgeBase):
             logger.info(
                 f"Split {filename} into {len(chunks)} chunks with params: "
                 f"chunk_preset_id={params.get('chunk_preset_id')}, "
-                f"chunk_size={params.get('chunk_size')}, "
-                f"chunk_overlap={params.get('chunk_overlap')}, "
-                f"qa_separator={params.get('qa_separator')}"
+                f"chunk_parser_config={params.get('chunk_parser_config')}"
             )
 
             if chunks:
@@ -461,7 +454,7 @@ class MilvusKB(KnowledgeBase):
             try:
                 # 更新状态为处理中
                 async with self._metadata_lock:
-                    resolved_params = resolve_chunk_processing_params(
+                    resolved_params = resolve_processing_params(
                         kb_additional_params=self.databases_meta.get(db_id, {}).get("metadata"),
                         file_processing_params=self.files_meta[file_id].get("processing_params"),
                         request_params=params,
@@ -471,9 +464,8 @@ class MilvusKB(KnowledgeBase):
                     await self._persist_file(file_id)
 
                 # 重新解析文件为 markdown
-                params["image_bucket"] = "public"
-                params["image_prefix"] = f"{db_id}/kb-images"
-                markdown_content = await Parser.aparse(source=file_path, params=params)
+                parse_params = {**resolved_params, "image_bucket": "public", "image_prefix": f"{db_id}/kb-images"}
+                markdown_content = await Parser.aparse(source=file_path, params=parse_params)
 
                 # 先删除现有的 Milvus 数据（仅删除chunks，保留元数据）
                 await self.delete_file_chunks_only(db_id, file_id)

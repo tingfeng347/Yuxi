@@ -13,7 +13,7 @@ from pymilvus import connections, utility
 from yuxi import config
 from yuxi.knowledge.base import FileStatus, KnowledgeBase
 from yuxi.knowledge.chunking.ragflow_like.dispatcher import chunk_markdown
-from yuxi.knowledge.chunking.ragflow_like.presets import resolve_chunk_processing_params
+from yuxi.knowledge.utils.kb_utils import resolve_processing_params
 from yuxi.models.embed import get_embedding_model_info_by_id
 from yuxi.plugins.parser.unified import Parser
 from yuxi.utils import hashstr, logger
@@ -370,7 +370,7 @@ class LightRagKB(KnowledgeBase):
                 markdown_content = await self._read_markdown_from_minio(file_meta["markdown_file"])
                 file_path = file_meta.get("path")
                 filename = file_meta.get("filename") or file_id
-                params = resolve_chunk_processing_params(
+                params = resolve_processing_params(
                     kb_additional_params=self.databases_meta.get(db_id, {}).get("metadata"),
                     file_processing_params=file_meta.get("processing_params"),
                     request_params=params,
@@ -458,7 +458,7 @@ class LightRagKB(KnowledgeBase):
 
                 try:
                     # 更新状态为处理中
-                    resolved_params = resolve_chunk_processing_params(
+                    resolved_params = resolve_processing_params(
                         kb_additional_params=self.databases_meta.get(db_id, {}).get("metadata"),
                         file_processing_params=self.files_meta[file_id].get("processing_params"),
                         request_params=params,
@@ -468,9 +468,8 @@ class LightRagKB(KnowledgeBase):
                     await self._persist_file(file_id)
 
                     # 重新解析文件为 markdown
-                    params["image_bucket"] = "public"
-                    params["image_prefix"] = f"{db_id}/kb-images"
-                    markdown_content = await Parser.aparse(source=file_path, params=params)
+                    parse_params = {**resolved_params, "image_bucket": "public", "image_prefix": f"{db_id}/kb-images"}
+                    markdown_content = await Parser.aparse(source=file_path, params=parse_params)
                     markdown_content_lines = markdown_content[:100].replace("\n", " ")
                     logger.info(f"Markdown content: {markdown_content_lines}...")
                     filename = file_meta.get("filename") or file_id

@@ -88,6 +88,16 @@ def _resolve_image_storage_params(params: dict | None) -> tuple[str, str]:
     return image_bucket, "unknown/kb-images"
 
 
+def _resolve_ocr_engine_params(params: dict | None) -> tuple[str, dict[str, Any]]:
+    params = params or {}
+    engine = str(params.get("ocr_engine") or "disable")
+    engine_config = params.get("ocr_engine_config")
+    processor_params = dict(params)
+    if isinstance(engine_config, dict):
+        processor_params.update(engine_config)
+    return engine, processor_params
+
+
 def _upload_image_to_minio(image_data: bytes, filename: str, bucket_name: str, object_prefix: str) -> str:
     """上传图片到 MinIO，返回 URL。"""
     minio_client = get_minio_client()
@@ -205,18 +215,17 @@ def parse_pdf(file, params=None):
     from yuxi.plugins.parser.base import DocumentProcessorException
     from yuxi.plugins.parser.factory import DocumentProcessorFactory
 
-    params = params or {}
-    opt_ocr = params.get("enable_ocr", "disable")
+    opt_ocr, processor_params = _resolve_ocr_engine_params(params)
 
     if opt_ocr == "disable":
-        return pdfreader(file, params=params)
+        return pdfreader(file, params=processor_params)
 
-    image_bucket, image_prefix = _resolve_image_storage_params(params)
-    params.setdefault("image_bucket", image_bucket)
-    params.setdefault("image_prefix", image_prefix)
+    image_bucket, image_prefix = _resolve_image_storage_params(processor_params)
+    processor_params.setdefault("image_bucket", image_bucket)
+    processor_params.setdefault("image_prefix", image_prefix)
 
     try:
-        return DocumentProcessorFactory.process_file(opt_ocr, file, params)
+        return DocumentProcessorFactory.process_file(opt_ocr, file, processor_params)
     except DocumentProcessorException as e:
         logger.error(f"文档处理失败: {e.service_name} - {str(e)}")
         raise
@@ -230,21 +239,20 @@ def parse_image(file, params=None):
     from yuxi.plugins.parser.base import DocumentProcessorException
     from yuxi.plugins.parser.factory import DocumentProcessorFactory
 
-    params = params or {}
-    opt_ocr = params.get("enable_ocr", "disable")
+    opt_ocr, processor_params = _resolve_ocr_engine_params(params)
 
     if opt_ocr == "disable":
         raise ValueError(
             "图像文件必须启用OCR才能提取文本内容。"
-            "请选择OCR方式 (rapid_ocr/mineru_ocr/mineru_official/pp_structure_v3_ocr) 或移除该文件。"
+            "请选择OCR方式 (rapid_ocr/mineru_ocr/mineru_official/pp_structure_v3_ocr/deepseek_ocr) 或移除该文件。"
         )
 
-    image_bucket, image_prefix = _resolve_image_storage_params(params)
-    params.setdefault("image_bucket", image_bucket)
-    params.setdefault("image_prefix", image_prefix)
+    image_bucket, image_prefix = _resolve_image_storage_params(processor_params)
+    processor_params.setdefault("image_bucket", image_bucket)
+    processor_params.setdefault("image_prefix", image_prefix)
 
     try:
-        return DocumentProcessorFactory.process_file(opt_ocr, file, params)
+        return DocumentProcessorFactory.process_file(opt_ocr, file, processor_params)
     except DocumentProcessorException as e:
         logger.error(f"图像处理失败: {e.service_name} - {str(e)}")
         raise

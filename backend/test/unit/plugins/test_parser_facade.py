@@ -154,11 +154,48 @@ def test_parser_parse_png_file_returns_markdown_text_with_mocked_ocr(
 
     monkeypatch.setattr(parser_unified, "parse_image_async", _fake_parse_image_async)
 
-    markdown = Parser.parse(str(file_path), params={"enable_ocr": "rapid_ocr"})
+    markdown = Parser.parse(str(file_path), params={"ocr_engine": "rapid_ocr"})
 
     assert isinstance(markdown, str)
     assert "Parser PNG content" in markdown
     assert len(markdown.strip()) > 0
+
+
+def test_parse_image_uses_ocr_engine_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    file_path = tmp_path / "parser_test.png"
+    _build_png(file_path)
+    captured = {}
+
+    def _fake_process_file(processor_type, file, params=None):
+        captured["processor_type"] = processor_type
+        captured["file"] = file
+        captured["params"] = params
+        return "OCR content"
+
+    monkeypatch.setattr(DocumentProcessorFactory, "process_file", _fake_process_file)
+
+    result = parser_unified.parse_image(
+        str(file_path),
+        params={
+            "ocr_engine": "mineru_ocr",
+            "backend": "old-backend",
+            "ocr_engine_config": {"backend": "pipeline", "formula_enable": False},
+        },
+    )
+
+    assert result == "OCR content"
+    assert captured["processor_type"] == "mineru_ocr"
+    assert captured["file"] == str(file_path)
+    assert captured["params"]["backend"] == "pipeline"
+    assert captured["params"]["formula_enable"] is False
+
+
+def test_parse_image_ignores_enable_ocr(tmp_path: Path) -> None:
+    file_path = tmp_path / "parser_test.png"
+    _build_png(file_path)
+
+    with pytest.raises(ValueError, match="必须启用OCR"):
+        parser_unified.parse_image(str(file_path), params={"enable_ocr": "rapid_ocr"})
 
 
 @pytest.mark.asyncio
@@ -185,7 +222,7 @@ async def test_parser_aparse_image_file_with_mineru_when_available():
 
     markdown = await Parser.aparse(
         str(file_path),
-        params={"enable_ocr": "mineru_ocr", "backend": "pipeline"},
+        params={"ocr_engine": "mineru_ocr", "backend": "pipeline"},
     )
 
     assert isinstance(markdown, str)

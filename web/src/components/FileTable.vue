@@ -672,27 +672,17 @@ const indexConfigModalVisible = ref(false)
 const indexConfigModalLoading = computed(() => store.state.chunkLoading)
 const indexConfigModalTitle = ref('入库参数配置')
 
-const indexParams = ref({
-  chunk_size: 1000,
-  chunk_overlap: 200,
-  qa_separator: '',
-  chunk_preset_id: ''
+const createDefaultIndexParams = () => ({
+  chunk_preset_id: '',
+  chunk_parser_config: {}
 })
+
+const indexParams = ref(createDefaultIndexParams())
+
 const buildIndexParamsPayload = () => {
-  const payload = {}
-  if (indexParams.value.chunk_preset_id) {
-    payload.chunk_preset_id = indexParams.value.chunk_preset_id
-  }
-
-  if (isLightRAG.value) {
-    payload.qa_separator = indexParams.value.qa_separator || ''
-    return payload
-  }
-
-  return {
-    ...indexParams.value,
-    ...payload
-  }
+  return buildChunkParamsPayload(indexParams.value, {
+    includeSizeOverlap: !isLightRAG.value
+  })
 }
 const currentIndexFileIds = ref([])
 const isBatchIndexOperation = ref(false)
@@ -1148,11 +1138,17 @@ const handleParseFile = async (record) => {
   await store.parseFiles([record.file_id])
 }
 
-const defaultIndexParams = {
-  chunk_size: 1000,
-  chunk_overlap: 200,
-  qa_separator: '',
-  chunk_preset_id: ''
+const resetIndexParams = (processingParams = null) => {
+  if (!processingParams) {
+    indexParams.value = createDefaultIndexParams()
+    return
+  }
+
+  const chunkParserConfig = processingParams.chunk_parser_config
+  indexParams.value = {
+    chunk_preset_id: processingParams.chunk_preset_id || '',
+    chunk_parser_config: isPlainObject(chunkParserConfig) ? { ...chunkParserConfig } : {}
+  }
 }
 
 const loadRecordProcessingParams = async (record) => {
@@ -1170,11 +1166,8 @@ const handleIndexFile = async (record) => {
   isBatchIndexOperation.value = false
   indexConfigModalTitle.value = '入库参数配置'
 
-  Object.assign(indexParams.value, defaultIndexParams)
   const processingParams = await loadRecordProcessingParams(record)
-  if (processingParams) {
-    Object.assign(indexParams.value, processingParams)
-  }
+  resetIndexParams(processingParams)
 
   indexConfigModalVisible.value = true
 }
@@ -1185,11 +1178,8 @@ const handleReindexFile = async (record) => {
   isBatchIndexOperation.value = false
   indexConfigModalTitle.value = '重新入库参数配置'
 
-  Object.assign(indexParams.value, defaultIndexParams)
   const processingParams = await loadRecordProcessingParams(record)
-  if (processingParams) {
-    Object.assign(indexParams.value, processingParams)
-  }
+  resetIndexParams(processingParams)
 
   indexConfigModalVisible.value = true
 }
@@ -1208,13 +1198,7 @@ const handleIndexConfigConfirm = async () => {
       // 关闭模态框
       indexConfigModalVisible.value = false
 
-      // 重置参数为默认值
-      Object.assign(indexParams.value, {
-        chunk_size: 1000,
-        chunk_overlap: 200,
-        qa_separator: '',
-        chunk_preset_id: ''
-      })
+      resetIndexParams()
     } else {
       // message.error(`入库失败: ${result.message}`); // store already shows message
     }
@@ -1230,12 +1214,12 @@ const handleIndexConfigCancel = () => {
   indexConfigModalVisible.value = false
   currentIndexFileIds.value = []
   isBatchIndexOperation.value = false
-  // 重置参数为默认值
-  Object.assign(indexParams.value, defaultIndexParams)
+  resetIndexParams()
 }
 
 // 导入工具函数
 import { getFileIcon, getFileIconColor, formatRelativeTime } from '@/utils/file_utils'
+import { buildChunkParamsPayload, isPlainObject } from '@/utils/chunk_presets'
 import ChunkParamsConfig from '@/components/ChunkParamsConfig.vue'
 </script>
 

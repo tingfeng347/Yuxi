@@ -156,6 +156,37 @@ async def test_index_file_allows_parallel_writes_for_different_databases(
     await asyncio.gather(task_a, task_b)
 
 
+async def test_index_file_preserves_ocr_processing_params(
+    light_rag_kb: LightRagKB,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_id = "kb_ocr_params"
+    file_id = "file-ocr"
+    light_rag_kb.databases_meta[db_id] = {"metadata": {}}
+    light_rag_kb.files_meta[file_id] = _build_kb_file("/tmp/file-ocr.md")
+    light_rag_kb.files_meta[file_id]["processing_params"] = {
+        "ocr_engine": "mineru_ocr",
+        "ocr_engine_config": {"backend": "pipeline"},
+        "chunk_parser_config": {"chunk_token_num": 300},
+    }
+    rag = SimpleNamespace(ainsert=_async_noop, doc_status=_FakeDocStatus())
+    monkeypatch.setattr(light_rag_kb, "_get_lightrag_instance", _make_async_return(rag))
+
+    await light_rag_kb.index_file(
+        db_id,
+        file_id,
+        params={"chunk_parser_config": {"overlapped_percent": 10}},
+    )
+
+    processing_params = light_rag_kb.files_meta[file_id]["processing_params"]
+    assert processing_params["ocr_engine"] == "mineru_ocr"
+    assert processing_params["ocr_engine_config"] == {"backend": "pipeline"}
+    assert processing_params["chunk_parser_config"] == {
+        "chunk_token_num": 300,
+        "overlapped_percent": 10,
+    }
+
+
 async def test_add_documents_auto_index_uses_latest_parsed_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, str]] = []
 
@@ -212,7 +243,6 @@ async def test_add_documents_auto_index_uses_latest_parsed_metadata(monkeypatch:
     async def fake_ensure_database_not_dify(_db_id: str, _operation: str) -> None:
         return None
 
-    monkeypatch.setattr("yuxi.knowledge.utils.kb_utils.validate_file_path", lambda _item, _db_id: None)
     monkeypatch.setattr(knowledge_router, "knowledge_base", FakeKnowledgeBase())
     monkeypatch.setattr(knowledge_router, "tasker", FakeTasker())
     monkeypatch.setattr(knowledge_router, "_ensure_database_not_dify", fake_ensure_database_not_dify)
@@ -220,7 +250,7 @@ async def test_add_documents_auto_index_uses_latest_parsed_metadata(monkeypatch:
     current_user = SimpleNamespace(user_id="user-1", id="user-1")
     result = await knowledge_router.add_documents(
         "kb_auto_index",
-        items=["/tmp/example.md"],
+        items=["http://minio:9000/knowledgebases/kb_auto_index/upload/example.md"],
         params={"content_type": "file", "auto_index": True},
         current_user=current_user,
     )
