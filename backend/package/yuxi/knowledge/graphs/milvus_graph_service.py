@@ -36,14 +36,14 @@ class MilvusGraphService:
     def __init__(
         self,
         *,
-        db_id: str | None = None,
+        kb_id: str | None = None,
         kb_repo: KnowledgeBaseRepository | None = None,
         chunk_repo: KnowledgeChunkRepository | None = None,
         graph_repo: KnowledgeGraphRepository | None = None,
         graph_vector_store: MilvusGraphVectorStore | None = None,
         neo4j_connection: Neo4jConnectionManager | None = None,
     ):
-        self.db_id = db_id
+        self.kb_id = kb_id
         self.kb_repo = kb_repo or KnowledgeBaseRepository()
         self.chunk_repo = chunk_repo or KnowledgeChunkRepository()
         self.graph_repo = graph_repo or KnowledgeGraphRepository()
@@ -66,15 +66,15 @@ class MilvusGraphService:
     def driver(self):
         return self.connection.driver
 
-    async def get_status(self, db_id: str, *, tasker: Any = None) -> dict[str, Any]:
-        kb = await self._get_milvus_kb(db_id)
+    async def get_status(self, kb_id: str, *, tasker: Any = None) -> dict[str, Any]:
+        kb = await self._get_milvus_kb(kb_id)
         params = dict(kb.additional_params or {})
         config = params.get(GRAPH_CONFIG_KEY) or {}
         total_chunks, pending_chunks, indexed_chunks, graph_counts = await asyncio.gather(
-            self.chunk_repo.count_by_db_id(db_id),
-            self.chunk_repo.count_graph_pending_by_db_id(db_id),
-            self.chunk_repo.count_graph_indexed_by_db_id(db_id),
-            self.graph_repo.count_by_db_id(db_id),
+            self.chunk_repo.count_by_kb_id(kb_id),
+            self.chunk_repo.count_graph_pending_by_kb_id(kb_id),
+            self.chunk_repo.count_graph_indexed_by_kb_id(kb_id),
+            self.graph_repo.count_by_kb_id(kb_id),
         )
         entity_count, relationship_count = graph_counts
 
@@ -83,7 +83,7 @@ class MilvusGraphService:
         if tasker is not None:
             active_task = await tasker.find_task_by_payload(
                 task_type=GRAPH_TASK_TYPE,
-                payload_match={"db_id": db_id},
+                payload_match={"kb_id": kb_id},
                 statuses={"pending", "running"},
             )
             if active_task:
@@ -92,7 +92,7 @@ class MilvusGraphService:
             else:
                 failed_task = await tasker.find_task_by_payload(
                     task_type=GRAPH_TASK_TYPE,
-                    payload_match={"db_id": db_id},
+                    payload_match={"kb_id": kb_id},
                     statuses={"failed", "cancelled"},
                 )
                 if failed_task:
@@ -100,7 +100,7 @@ class MilvusGraphService:
                     build_task_progress = 0
 
         return {
-            "db_id": db_id,
+            "kb_id": kb_id,
             "kb_type": kb.kb_type,
             "configured": bool(config),
             "locked": bool(config.get("locked")),
@@ -116,12 +116,12 @@ class MilvusGraphService:
 
     async def configure(
         self,
-        db_id: str,
+        kb_id: str,
         extractor_type: str,
         extractor_options: dict[str, Any],
         created_by: str,
     ) -> dict:
-        kb = await self._get_milvus_kb(db_id)
+        kb = await self._get_milvus_kb(kb_id)
         additional_params = dict(kb.additional_params or {})
         existing_config = additional_params.get(GRAPH_CONFIG_KEY) or {}
         normalized_extractor_type = (extractor_type or "").lower()
@@ -145,16 +145,16 @@ class MilvusGraphService:
             config["updated_at"] = utc_isoformat()
             config["updated_by"] = created_by
         additional_params[GRAPH_CONFIG_KEY] = config
-        await self.kb_repo.update(db_id, {"additional_params": additional_params})
+        await self.kb_repo.update(kb_id, {"additional_params": additional_params})
         return config
 
-    async def build_pending_chunks(self, db_id: str, *, batch_size: int, context=None) -> dict[str, Any]:
-        kb = await self._get_milvus_kb(db_id)
+    async def build_pending_chunks(self, kb_id: str, *, batch_size: int, context=None) -> dict[str, Any]:
+        kb = await self._get_milvus_kb(kb_id)
         config = self._get_locked_config(kb.additional_params or {})
         extractor_options = self._runtime_extractor_options(config)
         extractor = GraphExtractorFactory.create(config["extractor_type"], extractor_options)
         worker_count = self._get_worker_count(config)
-        total_pending = await self.chunk_repo.count_graph_pending_by_db_id(db_id)
+        total_pending = await self.chunk_repo.count_graph_pending_by_kb_id(kb_id)
         processed = 0
         failed = 0
         failed_chunk_ids: set[str] = set()
@@ -163,7 +163,7 @@ class MilvusGraphService:
         while True:
             if context is not None:
                 await context.raise_if_cancelled()
-            chunks = await self.chunk_repo.list_graph_pending_by_db_id(db_id, batch_size)
+            chunks = await self.chunk_repo.list_graph_pending_by_kb_id(kb_id, batch_size)
             unprocessed = [c for c in chunks if c.chunk_id not in failed_chunk_ids]
             if not unprocessed:
                 break
@@ -182,23 +182,23 @@ class MilvusGraphService:
                     except asyncio.QueueEmpty:
                         return
                     try:
-                        extraction_result = await self._get_chunk_extraction_result(db_id, chunk, extractor)
+                        extraction_result = await self._get_chunk_extraction_result(kb_id, chunk, extractor)
                         async with write_lock:
                             entities, triples = await asyncio.to_thread(
                                 self.write_chunk_graph,
-                                db_id,
+                                kb_id,
                                 chunk,
                                 extraction_result,
                             )
                             await self.graph_repo.upsert_chunk_graph(
-                                db_id=db_id,
+                                kb_id=kb_id,
                                 file_id=chunk.file_id,
                                 chunk_id=chunk.chunk_id,
                                 entities=entities,
                                 triples=triples,
                             )
                             await self.graph_vector_store.insert_missing_graph_records(
-                                db_id=db_id,
+                                kb_id=kb_id,
                                 embedding_model_spec=kb.embedding_model_spec,
                                 entities=entities,
                                 triples=triples,
@@ -229,8 +229,8 @@ class MilvusGraphService:
                 await asyncio.gather(*workers, return_exceptions=True)
                 raise
 
-        remaining = await self.chunk_repo.count_graph_pending_by_db_id(db_id)
-        return {"db_id": db_id, "success": processed, "failed": failed, "remaining": remaining}
+        remaining = await self.chunk_repo.count_graph_pending_by_kb_id(kb_id)
+        return {"kb_id": kb_id, "success": processed, "failed": failed, "remaining": remaining}
 
     @staticmethod
     def _get_worker_count(config: dict[str, Any]) -> int:
@@ -248,7 +248,7 @@ class MilvusGraphService:
         options.pop("prompt", None)
         return options
 
-    async def _get_chunk_extraction_result(self, db_id: str, chunk, extractor: GraphExtractor) -> dict[str, Any]:
+    async def _get_chunk_extraction_result(self, kb_id: str, chunk, extractor: GraphExtractor) -> dict[str, Any]:
         extractor_type = extractor.extractor_type
         if chunk.extraction_result:
             return normalize_extraction_result(chunk.extraction_result, extractor_type)
@@ -256,7 +256,7 @@ class MilvusGraphService:
         extraction_result = await extractor.extract(
             chunk.content,
             chunk_metadata={
-                "db_id": db_id,
+                "kb_id": kb_id,
                 "chunk_id": chunk.chunk_id,
                 "file_id": chunk.file_id,
                 "chunk_index": chunk.chunk_index,
@@ -268,22 +268,22 @@ class MilvusGraphService:
 
     def write_chunk_graph(
         self,
-        db_id: str,
+        kb_id: str,
         chunk,
         normalized_result: dict[str, Any],
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """将单个 chunk 的抽取结果写入 Neo4j。"""
-        label = safe_neo4j_label(db_id)
+        label = safe_neo4j_label(kb_id)
         graph_payload = build_graph_payload(normalized_result)
         relation_extractor_type = graph_payload["metadata"].get("extractor_type", "unknown")
         entities = graph_payload["entities"]
         relations = graph_payload["relations"]
         entity_by_id = {entity["id"]: entity for entity in entities}
-        entity_records = self._build_entity_records(db_id, entities)
+        entity_records = self._build_entity_records(kb_id, entities)
         entity_record_by_local_id = {
             entity["id"]: record for entity, record in zip(entities, entity_records, strict=True)
         }
-        triple_records = self._build_triple_records(db_id, relations, entity_record_by_local_id, graph_payload)
+        triple_records = self._build_triple_records(kb_id, relations, entity_record_by_local_id, graph_payload)
         content_preview = (chunk.content or "")[:300]
 
         # 预构建 Cypher 模板（同一 chunk 内复用）
@@ -297,7 +297,7 @@ class MilvusGraphService:
                 merge_chunk_cypher,
                 chunk_id=chunk.chunk_id,
                 file_id=chunk.file_id,
-                db_id=db_id,
+                kb_id=kb_id,
                 chunk_index=chunk.chunk_index,
                 content_preview=content_preview,
                 start_char_pos=chunk.start_char_pos,
@@ -311,7 +311,7 @@ class MilvusGraphService:
                     merge_entity_cypher,
                     chunk_id=chunk.chunk_id,
                     file_id=chunk.file_id,
-                    db_id=db_id,
+                    kb_id=kb_id,
                     entity_id=entity_record["entity_id"],
                     normalized_name=normalize_entity_name(entity["text"]),
                     entity_label=entity.get("label") or "Entity",
@@ -327,7 +327,7 @@ class MilvusGraphService:
                 target_record = entity_record_by_local_id[relation["target"]]
                 relation_type = relation.get("label") or "RELATED_TO"
                 triple_id = compute_triple_id(
-                    db_id,
+                    kb_id,
                     source_record["normalized_name"],
                     source_record["label"],
                     relation_type,
@@ -336,7 +336,7 @@ class MilvusGraphService:
                 )
                 tx.run(
                     merge_relation_cypher,
-                    db_id=db_id,
+                    kb_id=kb_id,
                     chunk_id=chunk.chunk_id,
                     file_id=chunk.file_id,
                     source_name=normalize_entity_name(source["text"]),
@@ -352,16 +352,16 @@ class MilvusGraphService:
         neo4j_write(self.driver, query)
         return entity_records, triple_records
 
-    def _build_entity_records(self, db_id: str, entities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _build_entity_records(self, kb_id: str, entities: list[dict[str, Any]]) -> list[dict[str, Any]]:
         records = []
         for entity in entities:
             label = entity.get("label") or "Entity"
             normalized_name = normalize_entity_name(entity["text"])
-            entity_id = compute_entity_id(db_id, normalized_name, label)
+            entity_id = compute_entity_id(kb_id, normalized_name, label)
             records.append(
                 {
                     "entity_id": entity_id,
-                    "db_id": db_id,
+                    "kb_id": kb_id,
                     "normalized_name": normalized_name,
                     "label": label,
                     "name": entity["text"],
@@ -373,7 +373,7 @@ class MilvusGraphService:
 
     def _build_triple_records(
         self,
-        db_id: str,
+        kb_id: str,
         relations: list[dict[str, Any]],
         entity_record_by_local_id: dict[str, dict[str, Any]],
         graph_payload: dict[str, Any],
@@ -386,7 +386,7 @@ class MilvusGraphService:
             target_record = entity_record_by_local_id[relation["target"]]
             relation_type = relation.get("label") or "RELATED_TO"
             triple_id = compute_triple_id(
-                db_id,
+                kb_id,
                 source_record["normalized_name"],
                 source_record["label"],
                 relation_type,
@@ -400,7 +400,7 @@ class MilvusGraphService:
             records.append(
                 {
                     "triple_id": triple_id,
-                    "db_id": db_id,
+                    "kb_id": kb_id,
                     "source_entity_id": source_record["entity_id"],
                     "target_entity_id": target_record["entity_id"],
                     "relation_type": relation_type,
@@ -411,15 +411,15 @@ class MilvusGraphService:
             )
         return records
 
-    async def reset(self, db_id: str, *, clear_extraction_result: bool, clear_config: bool) -> dict[str, Any]:
-        kb = await self._get_milvus_kb(db_id)
-        await asyncio.to_thread(self.delete_graph, db_id)
-        await self.graph_repo.delete_by_db_id(db_id)
-        reset_chunks = await self.chunk_repo.reset_graph_state_by_db_id(db_id, clear_extraction_result)
+    async def reset(self, kb_id: str, *, clear_extraction_result: bool, clear_config: bool) -> dict[str, Any]:
+        kb = await self._get_milvus_kb(kb_id)
+        await asyncio.to_thread(self.delete_graph, kb_id)
+        await self.graph_repo.delete_by_kb_id(kb_id)
+        reset_chunks = await self.chunk_repo.reset_graph_state_by_kb_id(kb_id, clear_extraction_result)
         if clear_config:
             additional_params = dict(kb.additional_params or {})
             additional_params.pop(GRAPH_CONFIG_KEY, None)
-            await self.kb_repo.update(db_id, {"additional_params": additional_params})
+            await self.kb_repo.update(kb_id, {"additional_params": additional_params})
         return {
             "message": "图谱构建状态已重置",
             "status": "success",
@@ -428,79 +428,79 @@ class MilvusGraphService:
             "clear_config": clear_config,
         }
 
-    def delete_graph(self, db_id: str) -> None:
-        label = safe_neo4j_label(db_id)
+    def delete_graph(self, kb_id: str) -> None:
+        label = safe_neo4j_label(kb_id)
 
         def query(tx):
             tx.run(f"MATCH (n:MilvusKB:`{label}`) DETACH DELETE n")
 
         neo4j_write(self.driver, query)
-        self.graph_vector_store.drop_graph_collections(db_id)
+        self.graph_vector_store.drop_graph_collections(kb_id)
 
-    async def delete_file_graph(self, db_id: str, file_id: str) -> None:
+    async def delete_file_graph(self, kb_id: str, file_id: str) -> None:
         orphan_entity_ids, orphan_triple_ids = await self.graph_repo.delete_file_references(file_id)
         await self.graph_vector_store.delete_graph_records(
-            db_id,
+            kb_id,
             entity_ids=orphan_entity_ids,
             triple_ids=orphan_triple_ids,
         )
-        await asyncio.to_thread(self._delete_file_graph_from_neo4j, db_id, file_id)
+        await asyncio.to_thread(self._delete_file_graph_from_neo4j, kb_id, file_id)
 
-    def _delete_file_graph_from_neo4j(self, db_id: str, file_id: str) -> None:
-        label = safe_neo4j_label(db_id)
+    def _delete_file_graph_from_neo4j(self, kb_id: str, file_id: str) -> None:
+        label = safe_neo4j_label(kb_id)
 
         def query(tx):
             tx.run(
                 f"""
-                MATCH (:Chunk:MilvusKB:`{label}`)-[m:MENTIONS {{db_id: $db_id, file_id: $file_id}}]->
+                MATCH (:Chunk:MilvusKB:`{label}`)-[m:MENTIONS {{kb_id: $kb_id, file_id: $file_id}}]->
                     (:Entity:MilvusKB:`{label}`)
                 DELETE m
                 """,
-                db_id=db_id,
+                kb_id=kb_id,
                 file_id=file_id,
             )
             tx.run(
                 f"""
-                MATCH (:Entity:MilvusKB:`{label}`)-[r:RELATION {{db_id: $db_id, file_id: $file_id}}]->
+                MATCH (:Entity:MilvusKB:`{label}`)-[r:RELATION {{kb_id: $kb_id, file_id: $file_id}}]->
                     (:Entity:MilvusKB:`{label}`)
                 DELETE r
                 """,
-                db_id=db_id,
+                kb_id=kb_id,
                 file_id=file_id,
             )
             tx.run(
                 f"""
-                MATCH (c:Chunk:MilvusKB:`{label}` {{db_id: $db_id, file_id: $file_id}})
+                MATCH (c:Chunk:MilvusKB:`{label}` {{kb_id: $kb_id, file_id: $file_id}})
                 DETACH DELETE c
                 """,
-                db_id=db_id,
+                kb_id=kb_id,
                 file_id=file_id,
             )
             tx.run(
                 f"""
-                MATCH (e:Entity:MilvusKB:`{label}` {{db_id: $db_id}})
+                MATCH (e:Entity:MilvusKB:`{label}` {{kb_id: $kb_id}})
                 WHERE NOT ()-[:MENTIONS]->(e)
                 DETACH DELETE e
                 """,
-                db_id=db_id,
+                kb_id=kb_id,
             )
 
         neo4j_write(self.driver, query)
 
     async def query_nodes(
         self,
-        db_id: str | None = None,
+        kb_id: str | None = None,
         *,
         keyword: str = "",
         max_depth: int = 1,
         max_nodes: int = 50,
         exclude_chunk: bool = False,
     ) -> dict[str, Any]:
-        effective_db_id = db_id or self.db_id
-        if not effective_db_id:
+        effective_kb_id = kb_id or self.kb_id
+        if not effective_kb_id:
             return {"nodes": [], "edges": []}
 
-        label = safe_neo4j_label(effective_db_id)
+        label = safe_neo4j_label(effective_kb_id)
         limit = max_nodes
         try:
             with self.driver.session() as session:
@@ -509,21 +509,21 @@ class MilvusGraphService:
                     keyword=keyword,
                     limit=limit,
                 )
-                return self._process_query_result(result, limit, effective_db_id, exclude_chunk)
+                return self._process_query_result(result, limit, effective_kb_id, exclude_chunk)
         except Exception as e:
             logger.error(f"Milvus graph query failed: {e}")
             return {"nodes": [], "edges": []}
 
     async def query_seed_subgraph(
         self,
-        db_id: str,
+        kb_id: str,
         *,
         entity_ids: list[str],
         max_nodes: int,
     ) -> dict[str, Any]:
         if not entity_ids:
             return {"nodes": [], "edges": []}
-        label = safe_neo4j_label(db_id)
+        label = safe_neo4j_label(kb_id)
         cypher = f"""
         MATCH (seed:Entity:MilvusKB:`{label}`)
         WHERE seed.entity_id IN $entity_ids
@@ -546,14 +546,14 @@ class MilvusGraphService:
                 ).single()
                 if not record:
                     return {"nodes": [], "edges": []}
-                return self._process_subgraph_record(record, max_nodes, db_id)
+                return self._process_subgraph_record(record, max_nodes, kb_id)
         except Exception as e:
             logger.error(f"Milvus seed subgraph query failed: {e}")
             return {"nodes": [], "edges": []}
 
     async def query_and_rank_chunks_by_ppr(
         self,
-        db_id: str,
+        kb_id: str,
         seed_weights: dict[str, float],
         *,
         max_nodes: int,
@@ -563,7 +563,7 @@ class MilvusGraphService:
         if not seed_weights:
             return []
         subgraph = await self.query_seed_subgraph(
-            db_id,
+            kb_id,
             entity_ids=list(seed_weights.keys()),
             max_nodes=max_nodes,
         )
@@ -622,32 +622,32 @@ class MilvusGraphService:
         )
         return ranked[:top_k]
 
-    async def get_labels(self, db_id: str | None = None) -> list[str]:
-        effective_db_id = db_id or self.db_id
-        if not effective_db_id:
+    async def get_labels(self, kb_id: str | None = None) -> list[str]:
+        effective_kb_id = kb_id or self.kb_id
+        if not effective_kb_id:
             return []
-        label = safe_neo4j_label(effective_db_id)
+        label = safe_neo4j_label(effective_kb_id)
 
         cypher = f"""
         MATCH (n:MilvusKB:`{label}`)
         UNWIND labels(n) AS node_label
         WITH DISTINCT node_label
-        WHERE node_label <> 'MilvusKB' AND node_label <> $db_id
+        WHERE node_label <> 'MilvusKB' AND node_label <> $kb_id
         RETURN node_label
         ORDER BY node_label
         """
         try:
-            records = neo4j_read(self.driver, cypher, db_id=effective_db_id)
+            records = neo4j_read(self.driver, cypher, kb_id=effective_kb_id)
             return [record["node_label"] for record in records]
         except Exception as e:
             logger.error(f"Failed to get Milvus graph labels: {e}")
             return []
 
-    async def get_stats(self, db_id: str | None = None) -> dict[str, Any]:
-        effective_db_id = db_id or self.db_id
-        if not effective_db_id:
+    async def get_stats(self, kb_id: str | None = None) -> dict[str, Any]:
+        effective_kb_id = kb_id or self.kb_id
+        if not effective_kb_id:
             return {"total_nodes": 0, "total_edges": 0, "entity_types": []}
-        label = safe_neo4j_label(effective_db_id)
+        label = safe_neo4j_label(effective_kb_id)
 
         stats_cypher = f"""
         MATCH (n:MilvusKB:`{label}`)
@@ -674,10 +674,10 @@ class MilvusGraphService:
             logger.error(f"Failed to get Milvus graph stats: {e}")
             return {"total_nodes": 0, "total_edges": 0, "entity_types": []}
 
-    async def _get_milvus_kb(self, db_id: str):
-        kb = await self.kb_repo.get_by_id(db_id)
+    async def _get_milvus_kb(self, kb_id: str):
+        kb = await self.kb_repo.get_by_kb_id(kb_id)
         if kb is None:
-            raise ValueError(f"知识库 {db_id} 不存在")
+            raise ValueError(f"知识库 {kb_id} 不存在")
         if (kb.kb_type or "").lower() != "milvus":
             raise ValueError("仅 Milvus 知识库支持独立图谱构建")
         return kb
@@ -737,7 +737,7 @@ class MilvusGraphService:
         LIMIT {limit * 10}
         """
 
-    def _process_query_result(self, result, limit: int, db_id: str, exclude_chunk: bool = False) -> dict[str, Any]:
+    def _process_query_result(self, result, limit: int, kb_id: str, exclude_chunk: bool = False) -> dict[str, Any]:
         nodes = []
         edges = []
         node_ids = set()
@@ -748,7 +748,7 @@ class MilvusGraphService:
                 raw_node = record.get(key)
                 if raw_node is None:
                     continue
-                node = self._normalize_node(raw_node, db_id)
+                node = self._normalize_node(raw_node, kb_id)
                 if not node or node["id"] in node_ids:
                     continue
                 if exclude_chunk and node.get("type") == "Chunk":
@@ -766,14 +766,14 @@ class MilvusGraphService:
 
         return {"nodes": nodes[:limit], "edges": edges[: limit * 2]}
 
-    def _process_subgraph_record(self, record: Any, limit: int, db_id: str) -> dict[str, Any]:
+    def _process_subgraph_record(self, record: Any, limit: int, kb_id: str) -> dict[str, Any]:
         nodes = []
         edges = []
         node_ids = set()
         edge_ids = set()
 
         for raw_node in record.get("nodes") or []:
-            node = self._normalize_node(raw_node, db_id)
+            node = self._normalize_node(raw_node, kb_id)
             if not node or node["id"] in node_ids:
                 continue
             nodes.append(node)
@@ -792,7 +792,7 @@ class MilvusGraphService:
 
         return {"nodes": nodes, "edges": edges}
 
-    def _normalize_node(self, raw_node: Any, db_id: str | None = None) -> dict[str, Any]:
+    def _normalize_node(self, raw_node: Any, kb_id: str | None = None) -> dict[str, Any]:
         if hasattr(raw_node, "element_id"):
             node_id = raw_node.element_id
             labels = list(raw_node.labels)
@@ -804,8 +804,8 @@ class MilvusGraphService:
         else:
             return {}
 
-        effective_db_id = db_id or self.db_id
-        db_label = properties.get("db_id") or effective_db_id
+        effective_kb_id = kb_id or self.kb_id
+        db_label = properties.get("kb_id") or effective_kb_id
         filtered_labels = [label for label in labels if label not in {"MilvusKB", db_label}]
         entity_type = "Chunk" if "Chunk" in labels else properties.get("label", "Entity")
         name = properties.get("name") or properties.get("content_preview") or properties.get("chunk_id") or "Unknown"

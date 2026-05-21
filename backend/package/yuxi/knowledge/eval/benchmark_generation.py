@@ -18,13 +18,13 @@ GRAPH_PPR_DAMPING = 0.85
 GRAPH_PPR_MAX_NODES = 10000
 
 
-async def collect_kb_chunks(kb_instance: Any, db_id: str) -> list[dict[str, Any]]:
+async def collect_kb_chunks(kb_instance: Any, kb_id: str) -> list[dict[str, Any]]:
     chunks = []
     for fid, finfo in kb_instance.files_meta.items():
-        if finfo.get("database_id") != db_id:
+        if finfo.get("kb_id") != kb_id:
             continue
         try:
-            content_info = await kb_instance.get_file_content(db_id, fid)
+            content_info = await kb_instance.get_file_content(kb_id, fid)
             for line in content_info.get("lines", []):
                 chunks.append(
                     {
@@ -75,7 +75,7 @@ def _is_anchor_chunk(candidate: dict[str, Any], anchor_chunk: dict[str, Any]) ->
 
 
 async def select_neighbor_chunks_by_kb_query(
-    *, kb_instance: Any, db_id: str, anchor_chunk: dict[str, Any], neighbors_count: int
+    *, kb_instance: Any, kb_id: str, anchor_chunk: dict[str, Any], neighbors_count: int
 ) -> list[dict[str, Any]]:
     if neighbors_count <= 0:
         return []
@@ -86,7 +86,7 @@ async def select_neighbor_chunks_by_kb_query(
 
     candidates = await kb_instance.aquery(
         anchor_content,
-        db_id,
+        kb_id,
         search_mode="vector",
         final_top_k=neighbors_count + 3,
         use_reranker=False,
@@ -120,7 +120,7 @@ async def select_neighbor_chunks_by_kb_query(
 
 async def select_graph_enhanced_chunks(
     *,
-    db_id: str,
+    kb_id: str,
     anchor_chunk: dict[str, Any],
     chunks_by_id: dict[str, dict[str, Any]],
     context_count: int,
@@ -146,7 +146,7 @@ async def select_graph_enhanced_chunks(
             seed_weights[entity_id] = 1.0
 
         ranked_chunks = await graph_service.query_and_rank_chunks_by_ppr(
-            db_id,
+            kb_id,
             seed_weights,
             max_nodes=GRAPH_PPR_MAX_NODES,
             top_k=max(context_count * 5, 20),
@@ -194,7 +194,7 @@ def build_benchmark_generation_prompt(ctx_items: list[tuple[str, str]]) -> str:
 async def _generate_benchmark_item_once(
     *,
     kb_instance: Any,
-    db_id: str,
+    kb_id: str,
     all_chunks: list[dict[str, Any]],
     llm: Any,
     context_count: int,
@@ -210,7 +210,7 @@ async def _generate_benchmark_item_once(
             raise ValueError("No graph indexed chunks with entities found in knowledge base")
         anchor_chunk = graph_anchor_chunks[random.randrange(len(graph_anchor_chunks))]
         ctx_chunks = await select_graph_enhanced_chunks(
-            db_id=db_id,
+            kb_id=kb_id,
             anchor_chunk=anchor_chunk,
             chunks_by_id=chunks_by_id,
             context_count=context_count,
@@ -222,7 +222,7 @@ async def _generate_benchmark_item_once(
         anchor_chunk = all_chunks[random.randrange(len(all_chunks))]
         neighbor_chunks = await select_neighbor_chunks_by_kb_query(
             kb_instance=kb_instance,
-            db_id=db_id,
+            kb_id=kb_id,
             anchor_chunk=anchor_chunk,
             neighbors_count=context_count - 1,
         )
@@ -254,7 +254,7 @@ async def _generate_benchmark_item_once(
 async def iter_generated_benchmark_items(
     *,
     kb_instance: Any,
-    db_id: str,
+    kb_id: str,
     count: int,
     neighbors_count: int,
     llm_model_spec: str | None,
@@ -267,7 +267,7 @@ async def iter_generated_benchmark_items(
     if progress_cb:
         await progress_cb(5, "加载chunks")
 
-    all_chunks = await collect_kb_chunks(kb_instance, db_id)
+    all_chunks = await collect_kb_chunks(kb_instance, kb_id)
     if not all_chunks:
         raise ValueError("No chunks found in knowledge base")
     chunks_by_id = {str(chunk["id"]): chunk for chunk in all_chunks if chunk.get("id") is not None}
@@ -310,7 +310,7 @@ async def iter_generated_benchmark_items(
             try:
                 item = await _generate_benchmark_item_once(
                     kb_instance=kb_instance,
-                    db_id=db_id,
+                    kb_id=kb_id,
                     all_chunks=all_chunks,
                     llm=llm,
                     context_count=context_count,

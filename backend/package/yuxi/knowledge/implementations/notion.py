@@ -227,11 +227,11 @@ class NotionKB(ReadOnlyConnectors):
             "notion_version": notion_version,
         }
 
-    async def aquery(self, query_text: str, db_id: str, agent_call: bool = False, **kwargs) -> list[dict]:
+    async def aquery(self, query_text: str, kb_id: str, agent_call: bool = False, **kwargs) -> list[dict]:
         del agent_call
         try:
-            token, data_source_id, notion_version = self._get_connection_config(db_id)
-            query_params = self._get_query_params(db_id)
+            token, data_source_id, notion_version = self._get_connection_config(kb_id)
+            query_params = self._get_query_params(kb_id)
             merged = {**query_params, **kwargs}
             final_top_k = min(max(int(merged.get("final_top_k", 10)), 1), 50)
             max_scan_pages = min(max(int(merged.get("max_scan_pages", 100)), 10), 1000)
@@ -270,7 +270,7 @@ class NotionKB(ReadOnlyConnectors):
 
             return sorted(results, key=lambda item: item.get("score", 0.0), reverse=True)[:final_top_k]
         except (NotionAPIError, httpx.HTTPError, ValueError) as exc:
-            logger.error(f"Notion query failed for db_id={db_id}: {exc}, {traceback.format_exc()}")
+            logger.error(f"Notion query failed for kb_id={kb_id}: {exc}, {traceback.format_exc()}")
             return []
 
     async def _search_candidate_pages(
@@ -372,13 +372,13 @@ class NotionKB(ReadOnlyConnectors):
             },
         }
 
-    async def open_file_content(self, db_id: str, file_id: str, offset: int = 0, limit: int = 800) -> dict:
-        content = await self._read_page_markdown(db_id, file_id)
+    async def open_file_content(self, kb_id: str, file_id: str, offset: int = 0, limit: int = 800) -> dict:
+        content = await self._read_page_markdown(kb_id, file_id)
         return self._build_open_file_window(content, offset=offset, limit=limit)
 
     async def find_file_content(
         self,
-        db_id: str,
+        kb_id: str,
         file_id: str,
         patterns: list[str],
         *,
@@ -387,7 +387,7 @@ class NotionKB(ReadOnlyConnectors):
         max_windows: int = 5,
         window_size: int = 80,
     ) -> dict:
-        content = await self._read_page_markdown(db_id, file_id)
+        content = await self._read_page_markdown(kb_id, file_id)
         return self._build_find_file_windows(
             content,
             patterns=patterns,
@@ -397,9 +397,9 @@ class NotionKB(ReadOnlyConnectors):
             window_size=window_size,
         )
 
-    async def _read_page_markdown(self, db_id: str, page_id: str) -> str:
-        token, data_source_id, notion_version = self._get_connection_config(db_id)
-        cache_key = (db_id, page_id, data_source_id, notion_version)
+    async def _read_page_markdown(self, kb_id: str, page_id: str) -> str:
+        token, data_source_id, notion_version = self._get_connection_config(kb_id)
+        cache_key = (kb_id, page_id, data_source_id, notion_version)
         cached = self._get_cached_page_markdown(cache_key)
         if cached is not None:
             return cached
@@ -430,15 +430,15 @@ class NotionKB(ReadOnlyConnectors):
             self._page_markdown_cache.pop(oldest_key, None)
         self._page_markdown_cache[cache_key] = (time.monotonic(), content)
 
-    def _get_connection_config(self, db_id: str) -> tuple[str, str, str]:
-        metadata = self.databases_meta.get(db_id, {}).get("metadata", {}) or {}
+    def _get_connection_config(self, kb_id: str) -> tuple[str, str, str]:
+        metadata = self.databases_meta.get(kb_id, {}).get("metadata", {}) or {}
         token = str(
             metadata.get("notion_token") or os.getenv("NOTION_TOKEN") or os.getenv("NOTION_API_KEY") or ""
         ).strip()
         data_source_id = str(metadata.get("notion_data_source_id") or "").strip()
         notion_version = str(metadata.get("notion_version") or NOTION_DEFAULT_VERSION).strip() or NOTION_DEFAULT_VERSION
         if not token or not data_source_id:
-            raise ValueError(f"Notion config incomplete for db_id={db_id}")
+            raise ValueError(f"Notion config incomplete for kb_id={kb_id}")
         return token, data_source_id, notion_version
 
     async def _page_to_markdown(
@@ -679,8 +679,8 @@ class NotionKB(ReadOnlyConnectors):
     def _preview(content: str, line_count: int) -> str:
         return "\n".join(content.splitlines()[:line_count])
 
-    def get_query_params_config(self, db_id: str, **kwargs) -> dict:
-        del db_id, kwargs
+    def get_query_params_config(self, kb_id: str, **kwargs) -> dict:
+        del kb_id, kwargs
         return {
             "type": "notion",
             "options": [

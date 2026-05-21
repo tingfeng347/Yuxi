@@ -58,7 +58,7 @@ async def generate_answer_if_needed(
 async def evaluate_question(
     *,
     kb_instance: Any,
-    db_id: str,
+    kb_id: str,
     question_data: dict[str, Any],
     retrieval_config: dict[str, Any],
     has_gold_chunks: bool,
@@ -67,7 +67,7 @@ async def evaluate_question(
     select_model_fn: Callable[..., Any],
 ) -> dict[str, Any]:
     query = question_data["query"]
-    query_result = await kb_instance.aquery(query, db_id, **retrieval_config)
+    query_result = await kb_instance.aquery(query, kb_id, **retrieval_config)
     generated_answer, retrieved_chunks = normalize_query_result(query_result)
     generated_answer = await generate_answer_if_needed(
         query=query,

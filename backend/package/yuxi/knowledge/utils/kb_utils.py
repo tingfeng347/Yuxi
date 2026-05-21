@@ -49,14 +49,14 @@ async def calculate_content_hash(data: bytes | bytearray) -> str:
     return sha256.hexdigest()
 
 
-async def prepare_item_metadata(item: str, content_type: str, db_id: str, params: dict | None = None) -> dict:
+async def prepare_item_metadata(item: str, content_type: str, kb_id: str, params: dict | None = None) -> dict:
     """
     准备文件或URL的元数据，文件来源必须是 MinIO URL。
 
     Args:
         item: MinIO URL 或 URL
         content_type: 内容类型 ("file" 或 "url")
-        db_id: 数据库ID
+        kb_id: 数据库ID
         params: 处理参数，可选
     """
     # 检查是否有预处理信息 (针对 URL 转 HTML 文件的情况)
@@ -81,7 +81,7 @@ async def prepare_item_metadata(item: str, content_type: str, db_id: str, params
         file_id = f"file_{hashstr(item + str(time.time()), 6)}"
 
         metadata = {
-            "database_id": db_id,
+            "kb_id": kb_id,
             "filename": filename_display,
             "path": item_path,
             "file_type": file_type,
@@ -147,7 +147,7 @@ async def prepare_item_metadata(item: str, content_type: str, db_id: str, params
         raise ValueError(f"Unsupported content_type: {content_type}")
 
     metadata = {
-        "database_id": db_id,
+        "kb_id": kb_id,
         "filename": filename_display,  # 使用显示用的文件名
         "path": item_path,
         "file_type": file_type,

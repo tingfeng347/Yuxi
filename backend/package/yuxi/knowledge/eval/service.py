@@ -35,7 +35,7 @@ class EvaluationService:
             "dataset_id": row.dataset_id,
             "name": row.name,
             "description": row.description,
-            "db_id": row.db_id,
+            "kb_id": row.kb_id,
             "item_count": row.item_count,
             "has_gold_chunks": row.has_gold_chunks,
             "has_gold_answers": row.has_gold_answers,
@@ -93,13 +93,13 @@ class EvaluationService:
             row.build_metadata = metadata
 
     def _build_dataset_items(
-        self, dataset_id: str, db_id: str, questions: list[dict[str, Any]]
+        self, dataset_id: str, kb_id: str, questions: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
         return [
             {
                 "item_id": f"dataset_item_{uuid.uuid4().hex[:12]}",
                 "dataset_id": dataset_id,
-                "db_id": db_id,
+                "kb_id": kb_id,
                 "item_index": index,
                 "query_text": item["query"],
                 "gold_chunk_ids": item.get("gold_chunk_ids") or [],
@@ -152,7 +152,7 @@ class EvaluationService:
         return questions, has_gold_chunks, has_gold_answers
 
     async def upload_dataset(
-        self, db_id: str, file_content: bytes, filename: str, name: str, description: str, created_by: str
+        self, kb_id: str, file_content: bytes, filename: str, name: str, description: str, created_by: str
     ) -> dict[str, Any]:
         try:
             questions, has_gold_chunks, has_gold_answers = self._parse_jsonl_questions(file_content)
@@ -162,7 +162,7 @@ class EvaluationService:
             row = await self.eval_repo.create_dataset_with_items(
                 {
                     "dataset_id": dataset_id,
-                    "db_id": db_id,
+                    "kb_id": kb_id,
                     "name": dataset_name,
                     "description": description,
                     "item_count": len(questions),
@@ -176,16 +176,16 @@ class EvaluationService:
                     },
                     "created_by": created_by,
                 },
-                self._build_dataset_items(dataset_id, db_id, questions),
+                self._build_dataset_items(dataset_id, kb_id, questions),
             )
             return self._dataset_to_dict(row)
         except Exception as e:
             logger.error(f"上传评估数据集失败: {e}")
             raise
 
-    async def list_datasets(self, db_id: str) -> list[dict[str, Any]]:
+    async def list_datasets(self, kb_id: str) -> list[dict[str, Any]]:
         try:
-            rows = await self.eval_repo.list_datasets(db_id)
+            rows = await self.eval_repo.list_datasets(kb_id)
             for row in rows:
                 await self._sync_dataset_build_metadata(row)
             return [self._dataset_to_dict(row) for row in rows]
@@ -194,11 +194,11 @@ class EvaluationService:
             raise
 
     async def get_dataset_detail(
-        self, db_id: str, dataset_id: str, page: int = 1, page_size: int = 10
+        self, kb_id: str, dataset_id: str, page: int = 1, page_size: int = 10
     ) -> dict[str, Any]:
         try:
             row = await self.eval_repo.get_dataset(dataset_id)
-            if row is None or row.db_id != db_id:
+            if row is None or row.kb_id != kb_id:
                 raise ValueError("Dataset not found")
             if (row.build_metadata or {}).get("status", "completed") != "completed":
                 raise ValueError("Dataset is not ready")
@@ -250,7 +250,7 @@ class EvaluationService:
 
     async def generate_dataset(
         self,
-        db_id: str,
+        kb_id: str,
         name: str,
         description: str,
         count: int,
@@ -269,7 +269,7 @@ class EvaluationService:
         if generation_mode not in {"vector", "graph_enhanced"}:
             raise ValueError("不支持的评估基准生成方式")
         if generation_mode == "graph_enhanced":
-            indexed_count = await self.chunk_repo.count_graph_indexed_by_db_id(db_id)
+            indexed_count = await self.chunk_repo.count_graph_indexed_by_kb_id(kb_id)
             if indexed_count <= 0:
                 raise ValueError("当前知识库尚未完成图索引，无法使用图增强构建")
         build_metadata = {
@@ -288,7 +288,7 @@ class EvaluationService:
         await self.eval_repo.create_dataset(
             {
                 "dataset_id": dataset_id,
-                "db_id": db_id,
+                "kb_id": kb_id,
                 "name": name,
                 "description": description,
                 "item_count": 0,
@@ -303,7 +303,7 @@ class EvaluationService:
             task_type="dataset_generation",
             payload={
                 "dataset_id": dataset_id,
-                "db_id": db_id,
+                "kb_id": kb_id,
                 "created_by": created_by,
                 "name": name,
                 "description": description,
@@ -333,7 +333,7 @@ class EvaluationService:
         payload = task.payload if task else {}
 
         dataset_id = payload.get("dataset_id")
-        db_id = payload.get("db_id")
+        kb_id = payload.get("kb_id")
         count = int(payload.get("count", 10))
         neighbors_count = int(payload.get("neighbors_count", 1))
         concurrency_count = normalize_generation_concurrency_count(payload.get("concurrency_count"))
@@ -366,7 +366,7 @@ class EvaluationService:
             )
 
         try:
-            kb_instance = await knowledge_base.aget_kb(db_id)
+            kb_instance = await knowledge_base.aget_kb(kb_id)
             if not kb_instance:
                 await report_progress(100, "知识库不存在")
                 raise ValueError("Knowledge Base not found")
@@ -378,7 +378,7 @@ class EvaluationService:
             try:
                 async for item in iter_generated_benchmark_items(
                     kb_instance=kb_instance,
-                    db_id=db_id,
+                    kb_id=kb_id,
                     count=count,
                     neighbors_count=neighbors_count,
                     llm_model_spec=llm_model_spec,
@@ -397,7 +397,7 @@ class EvaluationService:
             if not questions:
                 raise ValueError("未生成有效评估题目")
 
-            await self.eval_repo.add_dataset_items(self._build_dataset_items(dataset_id, db_id, questions))
+            await self.eval_repo.add_dataset_items(self._build_dataset_items(dataset_id, kb_id, questions))
             await self.eval_repo.update_dataset(dataset_id, {"item_count": len(questions)})
             await self._update_dataset_build_metadata(
                 dataset_id,
@@ -419,26 +419,26 @@ class EvaluationService:
             raise
 
     async def run_evaluation(
-        self, db_id: str, dataset_id: str, model_config: dict[str, Any] = None, created_by: str = "system"
+        self, kb_id: str, dataset_id: str, model_config: dict[str, Any] = None, created_by: str = "system"
     ) -> str:
         try:
             run_id = f"run_{uuid.uuid4().hex[:8]}"
             dataset_row = await self.eval_repo.get_dataset(dataset_id)
-            if dataset_row is None or dataset_row.db_id != db_id:
+            if dataset_row is None or dataset_row.kb_id != kb_id:
                 raise ValueError("Dataset not found")
             if (dataset_row.build_metadata or {}).get("status", "completed") != "completed":
                 raise ValueError("Dataset is not ready")
 
             retrieval_config = {}
             try:
-                kb_row = await self.kb_repo.get_by_id(db_id)
+                kb_row = await self.kb_repo.get_by_kb_id(kb_id)
                 query_params = (kb_row.query_params if kb_row else None) or {}
                 retrieval_config = query_params.get("options", {}) if isinstance(query_params, dict) else {}
                 if not retrieval_config:
-                    kb_instance = await knowledge_base.aget_kb(db_id)
+                    kb_instance = await knowledge_base.aget_kb(kb_id)
                     if kb_instance:
-                        retrieval_config = kb_instance._get_default_query_params(db_id).get("options", {})
-                logger.info(f"从知识库 {db_id} 加载检索配置: {list(retrieval_config.keys())}")
+                        retrieval_config = kb_instance._get_default_query_params(kb_id).get("options", {})
+                logger.info(f"从知识库 {kb_id} 加载检索配置: {list(retrieval_config.keys())}")
             except Exception as e:
                 logger.error(f"获取知识库检索配置失败: {e}")
 
@@ -448,7 +448,7 @@ class EvaluationService:
             await self.eval_repo.create_run(
                 {
                     "run_id": run_id,
-                    "db_id": db_id,
+                    "kb_id": kb_id,
                     "dataset_id": dataset_id,
                     "status": "running",
                     "retrieval_config": retrieval_config,
@@ -467,7 +467,7 @@ class EvaluationService:
                 task_type="rag_evaluation",
                 payload={
                     "run_id": run_id,
-                    "db_id": db_id,
+                    "kb_id": kb_id,
                     "dataset_id": dataset_id,
                     "retrieval_config": retrieval_config,
                     "created_by": created_by,
@@ -487,21 +487,21 @@ class EvaluationService:
             payload = task.payload
 
             run_id = payload["run_id"]
-            db_id = payload["db_id"]
+            kb_id = payload["kb_id"]
             dataset_id = payload["dataset_id"]
             retrieval_config = payload["retrieval_config"]
 
             await context.set_progress(5, "加载评估数据集")
             dataset_row = await self.eval_repo.get_dataset(dataset_id)
-            if dataset_row is None or dataset_row.db_id != db_id:
+            if dataset_row is None or dataset_row.kb_id != kb_id:
                 raise ValueError("Dataset not found")
             dataset_items = await self.eval_repo.list_all_dataset_items(dataset_id)
             if not dataset_items:
                 raise ValueError("Dataset has no items")
 
-            kb_instance = await knowledge_base.aget_kb(db_id)
+            kb_instance = await knowledge_base.aget_kb(kb_id)
             if not kb_instance:
-                raise ValueError(f"Knowledge Base {db_id} not found")
+                raise ValueError(f"Knowledge Base {kb_id} not found")
 
             judge_llm = None
             if dataset_row.has_gold_answers:
@@ -544,7 +544,7 @@ class EvaluationService:
                 }
                 question_result = await evaluate_question(
                     kb_instance=kb_instance,
-                    db_id=db_id,
+                    kb_id=kb_id,
                     question_data=question_data,
                     retrieval_config=retrieval_config,
                     has_gold_chunks=dataset_row.has_gold_chunks,
@@ -595,9 +595,9 @@ class EvaluationService:
             await context.set_message(f"Error: {str(e)}")
             raise
 
-    async def list_runs(self, db_id: str) -> list[dict[str, Any]]:
+    async def list_runs(self, kb_id: str) -> list[dict[str, Any]]:
         try:
-            rows = await self.eval_repo.list_runs(db_id)
+            rows = await self.eval_repo.list_runs(kb_id)
             running_run_ids = {row.run_id for row in rows if row.status == "running"}
             task_by_run_id = {}
             if running_run_ids:
@@ -635,12 +635,12 @@ class EvaluationService:
             raise
 
     async def get_run_results(
-        self, db_id: str, run_id: str, page: int = 1, page_size: int = 20, error_only: bool = False
+        self, kb_id: str, run_id: str, page: int = 1, page_size: int = 20, error_only: bool = False
     ) -> dict[str, Any]:
         if not re.match(r"^run_[a-f0-9]{8}$", run_id):
             raise ValueError("Invalid run_id format")
         row = await self.eval_repo.get_run(run_id)
-        if row is None or row.db_id != db_id:
+        if row is None or row.kb_id != kb_id:
             task = await tasker.get_task(run_id)
             if task:
                 return {"run_id": run_id, "status": task.status, "progress": task.progress, "message": task.message}
@@ -686,11 +686,11 @@ class EvaluationService:
             },
         }
 
-    async def delete_run(self, db_id: str, run_id: str) -> None:
+    async def delete_run(self, kb_id: str, run_id: str) -> None:
         if not re.match(r"^run_[a-f0-9]{8}$", run_id):
             raise ValueError("Invalid run_id format")
         row = await self.eval_repo.get_run(run_id)
-        if row is None or row.db_id != db_id:
+        if row is None or row.kb_id != kb_id:
             raise ValueError("Run not found")
         await self.eval_repo.delete_run(run_id)
         logger.info(f"成功删除评估运行: {run_id}")

@@ -16,12 +16,12 @@ def normalize_entity_name(text: str) -> str:
     return " ".join(text.strip().lower().split())
 
 
-def compute_entity_id(db_id: str, normalized_name: str, label: str) -> str:
-    return hashstr(f"{db_id}:{normalized_name}:{label}", length=32)
+def compute_entity_id(kb_id: str, normalized_name: str, label: str) -> str:
+    return hashstr(f"{kb_id}:{normalized_name}:{label}", length=32)
 
 
 def compute_triple_id(
-    db_id: str,
+    kb_id: str,
     source_normalized_name: str,
     source_label: str,
     relation_type: str,
@@ -29,17 +29,17 @@ def compute_triple_id(
     target_label: str,
 ) -> str:
     return hashstr(
-        f"{db_id}:{source_normalized_name}:{source_label}:{relation_type}:{target_normalized_name}:{target_label}",
+        f"{kb_id}:{source_normalized_name}:{source_label}:{relation_type}:{target_normalized_name}:{target_label}",
         length=32,
     )
 
 
-def graph_entity_collection_name(db_id: str) -> str:
-    return f"{db_id}_entity"
+def graph_entity_collection_name(kb_id: str) -> str:
+    return f"{kb_id}_entity"
 
 
-def graph_triple_collection_name(db_id: str) -> str:
-    return f"{db_id}_triple"
+def graph_triple_collection_name(kb_id: str) -> str:
+    return f"{kb_id}_triple"
 
 
 def build_graph_payload(normalized_result: dict[str, Any]) -> dict[str, Any]:
@@ -99,7 +99,7 @@ def cypher_merge_chunk(db_label: str) -> str:
     return f"""
     MERGE (c:Chunk:MilvusKB:`{db_label}` {{chunk_id: $chunk_id}})
     SET c.file_id = $file_id,
-        c.db_id = $db_id,
+        c.kb_id = $kb_id,
         c.chunk_index = $chunk_index,
         c.content_preview = $content_preview,
         c.start_char_pos = $start_char_pos,
@@ -112,14 +112,14 @@ def cypher_merge_entity_mention(db_label: str) -> str:
     return f"""
     MATCH (c:Chunk:MilvusKB:`{db_label}` {{chunk_id: $chunk_id}})
     MERGE (e:Entity:MilvusKB:`{db_label}` {{
-        db_id: $db_id,
+        kb_id: $kb_id,
         normalized_name: $normalized_name,
         label: $entity_label
     }})
     SET e.entity_id = $entity_id,
         e.name = $name,
         e.attributes = $attributes
-    MERGE (c)-[m:MENTIONS {{chunk_id: $chunk_id, file_id: $file_id, db_id: $db_id}}]->(e)
+    MERGE (c)-[m:MENTIONS {{chunk_id: $chunk_id, file_id: $file_id, kb_id: $kb_id}}]->(e)
     """
 
 
@@ -127,17 +127,17 @@ def cypher_merge_relation(db_label: str) -> str:
     """MERGE 两个 Entity 之间的 RELATION 边。"""
     return f"""
     MATCH (source:Entity:MilvusKB:`{db_label}` {{
-        db_id: $db_id,
+        kb_id: $kb_id,
         normalized_name: $source_name,
         label: $source_label
     }})
     MATCH (target:Entity:MilvusKB:`{db_label}` {{
-        db_id: $db_id,
+        kb_id: $kb_id,
         normalized_name: $target_name,
         label: $target_label
     }})
     MERGE (source)-[r:RELATION {{
-        db_id: $db_id,
+        kb_id: $kb_id,
         chunk_id: $chunk_id,
         source_name: $source_name,
         target_name: $target_name,

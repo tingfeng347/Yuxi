@@ -63,18 +63,18 @@ class DifyKB(ReadOnlyConnectors):
             raise ValueError("Dify api_url 必须以 /v1 结尾")
         return params
 
-    async def aquery(self, query_text: str, db_id: str, agent_call: bool = False, **kwargs) -> list[dict]:
+    async def aquery(self, query_text: str, kb_id: str, agent_call: bool = False, **kwargs) -> list[dict]:
         del agent_call
-        metadata = self.databases_meta.get(db_id, {}).get("metadata", {}) or {}
+        metadata = self.databases_meta.get(kb_id, {}).get("metadata", {}) or {}
         api_url = str(metadata.get("dify_api_url") or "").strip()
         token = str(metadata.get("dify_token") or "").strip()
         dataset_id = str(metadata.get("dify_dataset_id") or "").strip()
 
         if not api_url or not token or not dataset_id:
-            logger.error(f"Dify config incomplete for db_id={db_id}")
+            logger.error(f"Dify config incomplete for kb_id={kb_id}")
             return []
 
-        query_params = self._get_query_params(db_id)
+        query_params = self._get_query_params(kb_id)
         merged = {**query_params, **kwargs}
 
         search_mode = str(merged.get("search_mode", "vector")).lower()
@@ -109,7 +109,7 @@ class DifyKB(ReadOnlyConnectors):
         try:
             response_json = await self._request_dify(client_payload=payload, request_url=request_url, headers=headers)
         except Exception as e:  # noqa: BLE001
-            logger.error(f"Dify query failed for db_id={db_id}: {e}, {traceback.format_exc()}")
+            logger.error(f"Dify query failed for kb_id={kb_id}: {e}, {traceback.format_exc()}")
             # 一些 Dify 部署版本对 retrieval_model 兼容性较差，失败时降级为仅 query 请求重试一次
             try:
                 response_json = await self._request_dify(
@@ -117,10 +117,10 @@ class DifyKB(ReadOnlyConnectors):
                     request_url=request_url,
                     headers=headers,
                 )
-                logger.warning(f"Dify query fallback to query-only succeeded for db_id={db_id}")
+                logger.warning(f"Dify query fallback to query-only succeeded for kb_id={kb_id}")
             except Exception as fallback_error:  # noqa: BLE001
                 logger.error(
-                    f"Dify query fallback failed for db_id={db_id}: {fallback_error}, {traceback.format_exc()}"
+                    f"Dify query fallback failed for kb_id={kb_id}: {fallback_error}, {traceback.format_exc()}"
                 )
                 return []
 
@@ -172,8 +172,8 @@ class DifyKB(ReadOnlyConnectors):
                 raise e
             return response.json()
 
-    def get_query_params_config(self, db_id: str, **kwargs) -> dict:
-        del db_id, kwargs
+    def get_query_params_config(self, kb_id: str, **kwargs) -> dict:
+        del kb_id, kwargs
         options = [
             {
                 "key": "search_mode",

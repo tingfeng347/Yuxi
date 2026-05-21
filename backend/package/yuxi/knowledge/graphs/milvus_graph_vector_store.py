@@ -45,7 +45,7 @@ class MilvusGraphVectorStore:
     async def insert_missing_graph_records(
         self,
         *,
-        db_id: str,
+        kb_id: str,
         embedding_model_spec: str,
         entities: list[dict[str, Any]],
         triples: list[dict[str, Any]],
@@ -57,8 +57,8 @@ class MilvusGraphVectorStore:
         if not embedding_info or embedding_info.model_type != "embedding":
             raise ValueError(f"Unsupported embedding model: {embedding_model_spec}")
 
-        entity_collection = self._get_or_create_entity_collection(db_id, embedding_info)
-        triple_collection = self._get_or_create_triple_collection(db_id, embedding_info)
+        entity_collection = self._get_or_create_entity_collection(kb_id, embedding_info)
+        triple_collection = self._get_or_create_triple_collection(kb_id, embedding_info)
 
         entity_ids = [entity["entity_id"] for entity in entities]
         triple_ids = [triple["triple_id"] for triple in triples]
@@ -83,24 +83,24 @@ class MilvusGraphVectorStore:
         if missing_triples:
             await asyncio.to_thread(self._insert_triples, triple_collection, missing_triples, triple_embeddings)
 
-    async def delete_graph_records(self, db_id: str, *, entity_ids: list[str], triple_ids: list[str]) -> None:
+    async def delete_graph_records(self, kb_id: str, *, entity_ids: list[str], triple_ids: list[str]) -> None:
         tasks = []
         if entity_ids:
-            tasks.append(asyncio.to_thread(self._delete_ids, graph_entity_collection_name(db_id), entity_ids))
+            tasks.append(asyncio.to_thread(self._delete_ids, graph_entity_collection_name(kb_id), entity_ids))
         if triple_ids:
-            tasks.append(asyncio.to_thread(self._delete_ids, graph_triple_collection_name(db_id), triple_ids))
+            tasks.append(asyncio.to_thread(self._delete_ids, graph_triple_collection_name(kb_id), triple_ids))
         if tasks:
             await asyncio.gather(*tasks)
 
     async def search_entities(
         self,
         *,
-        db_id: str,
+        kb_id: str,
         query_text: str,
         embedding_model_spec: str,
         top_k: int,
     ) -> list[dict[str, Any]]:
-        collection_name = graph_entity_collection_name(db_id)
+        collection_name = graph_entity_collection_name(kb_id)
         if not utility.has_collection(collection_name, using=self.connection_alias):
             return []
         return await self._search_graph_collection(
@@ -114,12 +114,12 @@ class MilvusGraphVectorStore:
     async def search_triples(
         self,
         *,
-        db_id: str,
+        kb_id: str,
         query_text: str,
         embedding_model_spec: str,
         top_k: int,
     ) -> list[dict[str, Any]]:
-        collection_name = graph_triple_collection_name(db_id)
+        collection_name = graph_triple_collection_name(kb_id)
         if not utility.has_collection(collection_name, using=self.connection_alias):
             return []
         return await self._search_graph_collection(
@@ -130,8 +130,8 @@ class MilvusGraphVectorStore:
             output_fields=["id", "content", "source_id", "target_id"],
         )
 
-    def drop_graph_collections(self, db_id: str) -> None:
-        for collection_name in [graph_entity_collection_name(db_id), graph_triple_collection_name(db_id)]:
+    def drop_graph_collections(self, kb_id: str) -> None:
+        for collection_name in [graph_entity_collection_name(kb_id), graph_triple_collection_name(kb_id)]:
             try:
                 if utility.has_collection(collection_name, using=self.connection_alias):
                     utility.drop_collection(collection_name, using=self.connection_alias)
@@ -195,8 +195,8 @@ class MilvusGraphVectorStore:
             records.append(record)
         return records
 
-    def _get_or_create_entity_collection(self, db_id: str, embedding_info: Any) -> Collection:
-        collection_name = graph_entity_collection_name(db_id)
+    def _get_or_create_entity_collection(self, kb_id: str, embedding_info: Any) -> Collection:
+        collection_name = graph_entity_collection_name(kb_id)
         fields = [
             FieldSchema(name="id", dtype=DataType.VARCHAR, max_length=100, is_primary=True),
             FieldSchema(
@@ -211,8 +211,8 @@ class MilvusGraphVectorStore:
         ]
         return self._get_or_create_collection(collection_name, fields, embedding_info)
 
-    def _get_or_create_triple_collection(self, db_id: str, embedding_info: Any) -> Collection:
-        collection_name = graph_triple_collection_name(db_id)
+    def _get_or_create_triple_collection(self, kb_id: str, embedding_info: Any) -> Collection:
+        collection_name = graph_triple_collection_name(kb_id)
         fields = [
             FieldSchema(name="id", dtype=DataType.VARCHAR, max_length=100, is_primary=True),
             FieldSchema(
