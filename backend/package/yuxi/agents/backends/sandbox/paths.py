@@ -21,7 +21,7 @@ def get_virtual_path_prefix() -> str:
     return "/" + VIRTUAL_PATH_PREFIX.strip("/")
 
 
-def _validate_thread_id(thread_id: str) -> str:
+def validate_thread_id(thread_id: str) -> str:
     value = str(thread_id or "").strip()
     if not value:
         raise ValueError("thread_id is required")
@@ -31,7 +31,7 @@ def _validate_thread_id(thread_id: str) -> str:
 
 
 def _thread_root_dir(thread_id: str) -> Path:
-    safe_thread_id = _validate_thread_id(thread_id)
+    safe_thread_id = validate_thread_id(thread_id)
     return Path(conf.save_dir) / "threads" / safe_thread_id / "user-data"
 
 
@@ -55,7 +55,7 @@ def sandbox_user_data_dir(thread_id: str) -> Path:
 
 
 def sandbox_workspace_dir(thread_id: str, user_id: str) -> Path:
-    _validate_thread_id(thread_id)
+    validate_thread_id(thread_id)
     return _global_user_data_dir(user_id) / WORKSPACE_DIR_NAME
 
 

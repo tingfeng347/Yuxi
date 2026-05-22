@@ -43,9 +43,9 @@ async def search_mention_files(
         # 此时该 thread 专属的 uploads/outputs 目录还没创建或为空，
         # 用户仅能安全地搜索到自己全局的工作区 (workspace) 文件。
         try:
-            from yuxi.agents.backends.sandbox.paths import _validate_thread_id
+            from yuxi.agents.backends.sandbox.paths import validate_thread_id
 
-            _validate_thread_id(thread_id)
+            validate_thread_id(thread_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="非法的 thread_id 格式")
 
