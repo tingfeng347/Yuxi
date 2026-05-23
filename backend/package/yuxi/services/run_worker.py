@@ -221,6 +221,7 @@ async def process_agent_run(ctx, run_id: str):
         "thread_id": config.get("thread_id"),
         "uid": user.uid,
         "has_image": bool(image_content),
+        "attachment_file_ids": payload.get("attachment_file_ids") or [],
     }
 
     await mark_run_running(run_id)
@@ -237,7 +238,7 @@ async def process_agent_run(ctx, run_id: str):
         async with pg_manager.get_async_session_context() as db:
             stream = stream_agent_chat(
                 query=query,
-                agent_config_id=config.get("agent_config_id"),
+                agent_id=config.get("agent_id") or agent_id,
                 thread_id=config.get("thread_id"),
                 meta=meta,
                 image_content=image_content,

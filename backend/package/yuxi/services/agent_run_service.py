@@ -9,10 +9,11 @@ import uuid
 from collections.abc import AsyncIterator
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from yuxi.agents.buildin import agent_manager
-from yuxi.repositories.agent_config_repository import AgentConfigRepository
+from yuxi.repositories.agent_repository import AgentRepository
 from yuxi.repositories.agent_run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository
 from yuxi.repositories.conversation_repository import ConversationRepository
 from yuxi.services.run_queue_service import (
@@ -23,6 +24,7 @@ from yuxi.services.run_queue_service import (
     publish_cancel_signal,
 )
 from yuxi.storage.postgres.manager import pg_manager
+from yuxi.storage.postgres.models_business import User
 from yuxi.utils.datetime_utils import utc_now_naive
 from yuxi.utils.logging_config import logger
 
@@ -37,7 +39,7 @@ def _build_run_response(run) -> dict:
         "thread_id": run.thread_id,
         "status": run.status,
         "request_id": run.request_id,
-        "stream_url": f"/api/chat/runs/{run.id}/events?after_seq=0-0",
+        "stream_url": f"/api/agent/runs/{run.id}/events?after_seq=0-0",
     }
 
 
@@ -53,7 +55,7 @@ def _format_sse(data: dict, event: str | None = None) -> str:
 async def create_agent_run_view(
     *,
     query: str,
-    agent_config_id: int,
+    agent_id: str,
     thread_id: str,
     meta: dict,
     image_content: str | None,
@@ -66,29 +68,27 @@ async def create_agent_run_view(
     if not thread_id:
         raise HTTPException(status_code=422, detail="thread_id 不能为空")
 
-    config_repo = AgentConfigRepository(db)
-    config_item = await config_repo.get_by_id(config_id=int(agent_config_id))
-    if config_item is None or config_item.uid != str(current_uid):
-        raise HTTPException(status_code=404, detail="配置不存在")
-
-    agent_id = config_item.agent_id
-    if not agent_manager.get_agent(agent_id):
-        raise HTTPException(status_code=404, detail=f"智能体 {agent_id} 不存在")
-
     conv_repo = ConversationRepository(db)
     conversation = await conv_repo.get_conversation_by_thread_id(thread_id)
     if not conversation or conversation.uid != str(current_uid) or conversation.status == "deleted":
         raise HTTPException(status_code=404, detail="对话线程不存在")
-    if (conversation.extra_metadata or {}).get("agent_config_id") != int(agent_config_id):
-        conversation = await conv_repo.bind_agent_config(thread_id, agent_config_id)
-        if not conversation:
-            raise HTTPException(status_code=404, detail="对话线程不存在")
+    if conversation.agent_id != agent_id:
+        raise HTTPException(status_code=409, detail="已有线程已绑定智能体，不能切换")
+
+    user_result = await db.execute(select(User).where(User.uid == str(current_uid)))
+    current_user = user_result.scalar_one_or_none()
+    if not current_user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+
+    agent_repo = AgentRepository(db)
+    agent_item = await agent_repo.get_visible_by_slug(slug=agent_id, user=current_user)
+    if not agent_item:
+        raise HTTPException(status_code=404, detail="智能体不存在")
+    if not agent_manager.get_agent(agent_item.backend_id):
+        raise HTTPException(status_code=404, detail=f"智能体后端 {agent_item.backend_id} 不存在")
 
     request_id = str((meta or {}).get("request_id") or uuid.uuid4())
-    config = {
-        "thread_id": thread_id,
-        "agent_config_id": int(agent_config_id),
-    }
+    config = {"thread_id": thread_id, "agent_id": agent_id}
     run_repo = AgentRunRepository(db)
     existing = await run_repo.get_run_by_request_id(request_id)
     if existing and existing.uid == str(current_uid):
@@ -102,9 +102,11 @@ async def create_agent_run_view(
         "config": config or {},
         "image_content": image_content,
         "agent_id": agent_id,
+        "backend_id": agent_item.backend_id,
         "thread_id": thread_id,
         "uid": str(current_uid),
         "request_id": request_id,
+        "attachment_file_ids": (meta or {}).get("attachment_file_ids") or [],
         "created_at": utc_now_naive().isoformat(),
     }
     try:

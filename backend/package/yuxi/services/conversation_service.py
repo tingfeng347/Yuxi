@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from yuxi.agents.backends.sandbox import (
     ensure_thread_dirs,
@@ -11,9 +12,11 @@ from yuxi.agents.backends.sandbox import (
 from yuxi.agents.buildin import agent_manager
 from yuxi.config import config as app_config
 from yuxi.plugins.parser import Parser
+from yuxi.repositories.agent_repository import AgentRepository
 from yuxi.repositories.conversation_repository import ConversationRepository
 from yuxi.services.mention_search_service import invalidate_mention_cache
 from yuxi.services.upload_utils import write_upload_to_path
+from yuxi.storage.postgres.models_business import User
 from yuxi.utils.datetime_utils import utc_isoformat
 from yuxi.utils.logging_config import logger
 from yuxi.utils.paths import VIRTUAL_PATH_UPLOADS
@@ -150,6 +153,7 @@ def _build_state_uploads(attachments: list[dict]) -> list[dict]:
                 "uploaded_at": attachment.get("uploaded_at"),
                 "path": path,
                 "artifact_url": attachment.get("artifact_url"),
+                "request_id": attachment.get("request_id"),
             }
         )
     return uploads
@@ -160,10 +164,11 @@ async def _sync_thread_upload_state(
     thread_id: str,
     uid: str,
     agent_id: str,
+    backend_id: str | None,
     attachments: list[dict],
 ) -> None:
     try:
-        agent = agent_manager.get_agent(agent_id)
+        agent = agent_manager.get_agent(backend_id or agent_id)
         if not agent:
             logger.warning(f"Skip upload state sync: agent not found ({agent_id})")
             return
@@ -195,6 +200,7 @@ def serialize_attachment(record: dict) -> dict:
         "original_path": record.get("original_path"),
         "original_artifact_url": record.get("original_artifact_url"),
         "minio_url": record.get("minio_url"),
+        "request_id": record.get("request_id"),
     }
 
 
@@ -264,14 +270,26 @@ async def create_thread_view(
     db: AsyncSession,
     current_uid: str,
 ) -> dict:
+    user_result = await db.execute(select(User).where(User.uid == str(current_uid)))
+    current_user = user_result.scalar_one_or_none()
+    if not current_user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+
+    agent_repo = AgentRepository(db)
+    agent_item = await agent_repo.get_visible_by_slug(slug=agent_id, user=current_user)
+    if not agent_item:
+        raise HTTPException(status_code=404, detail="智能体不存在")
+
     thread_id = str(uuid.uuid4())
     conv_repo = ConversationRepository(db)
+    thread_metadata = dict(metadata or {})
+    thread_metadata["backend_id"] = agent_item.backend_id
     conversation = await conv_repo.create_conversation(
         uid=str(current_uid),
-        agent_id=agent_id,
+        agent_id=agent_item.slug,
         title=title or "新的对话",
         thread_id=thread_id,
-        metadata=metadata,
+        metadata=thread_metadata,
     )
 
     return {
@@ -408,6 +426,7 @@ async def upload_thread_attachment_view(
         thread_id=thread_id,
         uid=str(current_uid),
         agent_id=conversation.agent_id,
+        backend_id=(conversation.extra_metadata or {}).get("backend_id"),
         attachments=all_attachments,
     )
 
@@ -474,6 +493,7 @@ async def delete_thread_attachment_view(
         thread_id=thread_id,
         uid=str(current_uid),
         agent_id=conversation.agent_id,
+        backend_id=(conversation.extra_metadata or {}).get("backend_id"),
         attachments=all_attachments,
     )
 
@@ -495,6 +515,18 @@ async def get_thread_history_view(
         raise HTTPException(status_code=404, detail="对话线程不存在")
 
     messages = await conv_repo.get_messages_by_thread_id(thread_id)
+    message_request_ids = set()
+    for msg in messages:
+        request_id = (msg.extra_metadata or {}).get("request_id")
+        if msg.role == "user" and request_id:
+            message_request_ids.add(str(request_id))
+    attachments_by_request_id: dict[str, list[dict]] = {}
+    if message_request_ids:
+        for attachment in await conv_repo.get_attachments(conversation.id):
+            request_id = attachment.get("request_id")
+            if not request_id or str(request_id) not in message_request_ids:
+                continue
+            attachments_by_request_id.setdefault(str(request_id), []).append(serialize_attachment(attachment))
 
     history: list[dict] = []
     role_type_map = {"user": "human", "assistant": "ai", "tool": "tool", "system": "system"}
@@ -512,14 +544,19 @@ async def get_thread_history_view(
                     }
                     break
 
+        extra_metadata = dict(msg.extra_metadata or {})
+        request_id = extra_metadata.get("request_id")
+        if msg.role == "user" and request_id and not extra_metadata.get("attachments"):
+            extra_metadata["attachments"] = attachments_by_request_id.get(str(request_id), [])
+
         msg_dict = {
             "id": msg.id,
             "type": role_type_map.get(msg.role, msg.role),
             "content": msg.content,
             "created_at": msg.created_at.isoformat() if msg.created_at else None,
-            "error_type": msg.extra_metadata.get("error_type") if msg.extra_metadata else None,
-            "error_message": msg.extra_metadata.get("error_message") if msg.extra_metadata else None,
-            "extra_metadata": msg.extra_metadata,
+            "error_type": extra_metadata.get("error_type"),
+            "error_message": extra_metadata.get("error_message"),
+            "extra_metadata": extra_metadata,
             "message_type": msg.message_type,
             "image_content": msg.image_content,
             "feedback": user_feedback,

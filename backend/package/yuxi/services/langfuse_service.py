@@ -68,7 +68,7 @@ def build_trace_metadata(
     agent_id: str,
     request_id: str,
     operation: str,
-    agent_config_id: int | None = None,
+    backend_id: str | None = None,
     message_type: str | None = None,
     username: str | None = None,
     login_user_id: str | None = None,
@@ -85,8 +85,8 @@ def build_trace_metadata(
         "feature": "chat",
     }
 
-    if agent_config_id is not None:
-        metadata["agent_config_id"] = str(agent_config_id)
+    if backend_id:
+        metadata["backend_id"] = backend_id
     if message_type:
         metadata["message_type"] = message_type
     if username:
@@ -113,7 +113,7 @@ def build_run_context(
     agent_id: str,
     request_id: str,
     operation: str,
-    agent_config_id: int | None = None,
+    backend_id: str | None = None,
     message_type: str | None = None,
     username: str | None = None,
     login_user_id: str | None = None,
@@ -125,7 +125,7 @@ def build_run_context(
         agent_id=agent_id,
         request_id=request_id,
         operation=operation,
-        agent_config_id=agent_config_id,
+        backend_id=backend_id,
         message_type=message_type,
         username=username,
         login_user_id=login_user_id,
