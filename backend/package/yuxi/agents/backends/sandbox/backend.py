@@ -293,8 +293,8 @@ class ProvisionerSandboxBackend(BaseSandbox):
                 new_str=new_string,
                 replace_mode=replace_mode,
             )
-            if not result.data.success:
-                return EditResult(error=result.data.message or f"Error editing file '{file_path}'")
+            if not result.success:
+                return EditResult(error=result.message or f"Error editing file '{file_path}'")
         except Exception as exc:  # noqa: BLE001
             return EditResult(error=f"Error editing file: {exc}")
 
