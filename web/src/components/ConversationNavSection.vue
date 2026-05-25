@@ -2,7 +2,7 @@
   <section class="conversation-nav-section" :class="{ collapsed }">
     <div v-if="showHistory && !collapsed" class="history-panel">
       <div class="history-label" @click="listCollapsed = !listCollapsed">
-        <span>对话历史</span>
+        <span>最近</span>
         <ChevronDown :size="14" class="collapse-icon" :class="{ collapsed: listCollapsed }" />
       </div>
       <div v-show="!listCollapsed" class="conversation-list">
@@ -188,21 +188,18 @@ const renameChat = async (chatId) => {
 .history-label {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   padding: 4px 8px;
-  color: var(--gray-500);
+  color: var(--gray-800);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
   border-radius: 4px;
   transition: background-color 0.2s ease;
+  gap: 4px;
 
-  &:hover {
-    background: var(--main-20);
-  }
-
-  &:active {
-    background: var(--main-30);
+  span {
+    font-weight: 500;
   }
 }
 
@@ -242,12 +239,19 @@ const renameChat = async (chatId) => {
     color 0.2s ease;
 
   &:hover {
-    background: var(--main-20);
-    color: var(--main-color);
+    background: var(--gray-50);
 
     .actions-mask,
     .conversation-actions {
       opacity: 1;
+    }
+
+    .actions-mask {
+      background: linear-gradient(
+        to right,
+        transparent,
+        var(--gray-50)
+      );
     }
 
     .more-btn {
@@ -260,16 +264,19 @@ const renameChat = async (chatId) => {
   }
 
   &.active {
-    background-color: color-mix(in srgb, var(--main-color) 6%, var(--gray-0));
+    background-color: color-mix(in srgb, var(--main-color) 8%, var(--gray-0));
     color: var(--main-color);
-    font-weight: 600;
+
+    .conversation-title {
+      font-weight: 600;
+    }
 
     .actions-mask {
       opacity: 1;
       background: linear-gradient(
         to right,
         transparent,
-        color-mix(in srgb, var(--main-color) 6%, var(--gray-0)) 20px
+        color-mix(in srgb, var(--main-color) 8%, var(--gray-0)) 20px
       );
     }
   }
