@@ -32,7 +32,7 @@
             <a-button
               size="small"
               type="text"
-              class="remove-btn"
+              class="lucide-icon-btn remove-btn"
               :disabled="confirming"
               @click="removeItem(item.localId)"
             >
@@ -136,7 +136,7 @@
                 :loading="item.status === 'parsing'"
                 :disabled="confirming"
               >
-                解析
+                可解析
               </a-button>
             </a-popover>
           </div>
@@ -546,12 +546,6 @@ const formatFileSize = (size) => {
 }
 
 .remove-btn {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
   color: var(--gray-500);
 }
 
@@ -565,7 +559,6 @@ const formatFileSize = (size) => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-top: 6px;
   color: var(--gray-500);
   font-size: 12px;
 }
@@ -585,6 +578,7 @@ const formatFileSize = (size) => {
 .parse-trigger-btn {
   flex: none;
   margin-left: auto;
+  font-size: 12px;
 }
 
 .parse-panel {

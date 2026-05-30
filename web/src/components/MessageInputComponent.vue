@@ -25,22 +25,27 @@
       <slot name="actions-left"></slot>
     </div>
 
-    <textarea
+    <div
       ref="inputRef"
-      class="user-input"
-      :value="inputValue"
+      class="user-input mention-editor"
+      role="textbox"
+      aria-multiline="true"
+      :aria-label="placeholder"
+      :contenteditable="disabled ? 'false' : 'true'"
+      :data-placeholder="placeholder"
       @keydown="handleKeyPress"
       @keyup="handleKeyUp"
       @input="handleInput"
       @focus="focusInput"
-      @click="handleTextareaClick"
-      :placeholder="placeholder"
-      :disabled="disabled"
-    />
+      @click="handleEditorClick"
+      @paste="handlePaste"
+      @compositionstart="handleCompositionStart"
+      @compositionend="handleCompositionEnd"
+    ></div>
 
     <!-- @ 提及选择弹窗 -->
     <div v-if="mentionPopupVisible" ref="mentionDropdownRef" class="mention-dropdown-wrapper">
-      <div class="mention-popup">
+      <div class="mention-popup" @mousedown.prevent>
         <!-- 文件列表 -->
         <div v-if="mentionItems.files.length > 0 || showFileSearchPrompt" class="mention-group">
           <div class="mention-group-title">文件</div>
@@ -94,15 +99,32 @@
           <div
             v-for="(item, index) in mentionItems.knowledgeBases"
             :key="'kb-' + item.value"
-            :class="['mention-item', { active: isItemSelected('knowledge', index) }]"
+            :class="['mention-item', 'resource-item', { active: isItemSelected('knowledge', index) }]"
             @click="insertMention(item)"
           >
-            <span
-              v-for="(part, pIdx) in splitTextByQuery(item.label, mentionQuery)"
-              :key="pIdx"
-              :class="{ 'query-match': part.isMatch }"
-              >{{ part.text }}</span
+            <div class="resource-name">
+              <span
+                v-for="(part, pIdx) in splitTextByQuery(item.label, mentionQuery)"
+                :key="pIdx"
+                :class="{ 'query-match': part.isMatch }"
+                >{{ part.text }}</span
+              >
+            </div>
+            <div
+              v-if="getMentionDescription(item.description)"
+              class="resource-description"
+              :title="getMentionDescription(item.description)"
             >
+              <span
+                v-for="(part, pIdx) in splitTextByQuery(
+                  getMentionDescription(item.description),
+                  mentionQuery
+                )"
+                :key="pIdx"
+                :class="{ 'query-match': part.isMatch }"
+                >{{ part.text }}</span
+              >
+            </div>
           </div>
         </div>
 
@@ -112,15 +134,32 @@
           <div
             v-for="(item, index) in mentionItems.mcps"
             :key="'mcp-' + item.value"
-            :class="['mention-item', { active: isItemSelected('mcp', index) }]"
+            :class="['mention-item', 'resource-item', { active: isItemSelected('mcp', index) }]"
             @click="insertMention(item)"
           >
-            <span
-              v-for="(part, pIdx) in splitTextByQuery(item.label, mentionQuery)"
-              :key="pIdx"
-              :class="{ 'query-match': part.isMatch }"
-              >{{ part.text }}</span
+            <div class="resource-name">
+              <span
+                v-for="(part, pIdx) in splitTextByQuery(item.label, mentionQuery)"
+                :key="pIdx"
+                :class="{ 'query-match': part.isMatch }"
+                >{{ part.text }}</span
+              >
+            </div>
+            <div
+              v-if="getMentionDescription(item.description)"
+              class="resource-description"
+              :title="getMentionDescription(item.description)"
             >
+              <span
+                v-for="(part, pIdx) in splitTextByQuery(
+                  getMentionDescription(item.description),
+                  mentionQuery
+                )"
+                :key="pIdx"
+                :class="{ 'query-match': part.isMatch }"
+                >{{ part.text }}</span
+              >
+            </div>
           </div>
         </div>
 
@@ -130,15 +169,32 @@
           <div
             v-for="(item, index) in mentionItems.skills"
             :key="'skill-' + item.value"
-            :class="['mention-item', { active: isItemSelected('skill', index) }]"
+            :class="['mention-item', 'resource-item', { active: isItemSelected('skill', index) }]"
             @click="insertMention(item)"
           >
-            <span
-              v-for="(part, pIdx) in splitTextByQuery(item.label, mentionQuery)"
-              :key="pIdx"
-              :class="{ 'query-match': part.isMatch }"
-              >{{ part.text }}</span
+            <div class="resource-name">
+              <span
+                v-for="(part, pIdx) in splitTextByQuery(item.label, mentionQuery)"
+                :key="pIdx"
+                :class="{ 'query-match': part.isMatch }"
+                >{{ part.text }}</span
+              >
+            </div>
+            <div
+              v-if="getMentionDescription(item.description)"
+              class="resource-description"
+              :title="getMentionDescription(item.description)"
             >
+              <span
+                v-for="(part, pIdx) in splitTextByQuery(
+                  getMentionDescription(item.description),
+                  mentionQuery
+                )"
+                :key="pIdx"
+                :class="{ 'query-match': part.isMatch }"
+                >{{ part.text }}</span
+              >
+            </div>
           </div>
         </div>
 
@@ -148,15 +204,32 @@
           <div
             v-for="(item, index) in mentionItems.subagents"
             :key="'subagent-' + item.value"
-            :class="['mention-item', { active: isItemSelected('subagent', index) }]"
+            :class="['mention-item', 'resource-item', { active: isItemSelected('subagent', index) }]"
             @click="insertMention(item)"
           >
-            <span
-              v-for="(part, pIdx) in splitTextByQuery(item.label, mentionQuery)"
-              :key="pIdx"
-              :class="{ 'query-match': part.isMatch }"
-              >{{ part.text }}</span
+            <div class="resource-name">
+              <span
+                v-for="(part, pIdx) in splitTextByQuery(item.label, mentionQuery)"
+                :key="pIdx"
+                :class="{ 'query-match': part.isMatch }"
+                >{{ part.text }}</span
+              >
+            </div>
+            <div
+              v-if="getMentionDescription(item.description)"
+              class="resource-description"
+              :title="getMentionDescription(item.description)"
             >
+              <span
+                v-for="(part, pIdx) in splitTextByQuery(
+                  getMentionDescription(item.description),
+                  mentionQuery
+                )"
+                :key="pIdx"
+                :class="{ 'query-match': part.isMatch }"
+                >{{ part.text }}</span
+              >
+            </div>
           </div>
         </div>
 
@@ -193,6 +266,16 @@ import { SendOutlined, ArrowUpOutlined, PauseOutlined, FolderFilled } from '@ant
 import { Paperclip } from 'lucide-vue-next'
 import { searchMentionFiles } from '@/apis/mention_api'
 import { getFileIcon, getFileIconColor } from '@/utils/file_utils'
+import {
+  buildMentionDisplayLabels,
+  expandMentionDeletionRange,
+  findActiveMentionQuery,
+  formatMentionToken,
+  getMentionDisplayLabel,
+  mentionTypePrefixMap,
+  parseMentionText,
+  replaceRawRange
+} from '@/utils/mention_utils'
 
 // 点击外部关闭下拉框
 const mentionDropdownRef = ref(null)
@@ -258,17 +341,25 @@ const mentionEnabled = computed(() => {
   return !!props.mention
 })
 
-const mentionTypePrefixMap = {
-  file: 'file',
-  knowledge: 'knowledge',
-  mcp: 'mcp',
-  skill: 'skill',
-  subagent: 'subagent'
+const mentionDisplayLabels = computed(() => buildMentionDisplayLabels(props.mention || {}))
+
+let lastRawSelectionRange = null
+let lastSyncedEditorValue = props.modelValue || ''
+
+const getStoredRawSelectionRange = () => {
+  const length = getEditorRawValue().length
+  if (!lastRawSelectionRange) {
+    return { start: length, end: length, collapsed: true }
+  }
+
+  const start = Math.max(0, Math.min(lastRawSelectionRange.start, length))
+  const end = Math.max(start, Math.min(lastRawSelectionRange.end, length))
+  return { start, end, collapsed: start === end }
 }
 
-const formatMentionToken = (type, value) => {
-  const prefix = mentionTypePrefixMap[type] || type
-  return `@${prefix}:${value}`
+const rememberRawSelectionRange = (range) => {
+  lastRawSelectionRange = { ...range }
+  return range
 }
 
 const formatMentionPath = (path) => {
@@ -288,6 +379,12 @@ const formatMentionPath = (path) => {
   return pathForParent.substring(0, lastSlashIndex + 1)
 }
 
+const getMentionDescription = (description) => {
+  const value = String(description || '').trim()
+  if (!value || value === '暂无描述') return ''
+  return value
+}
+
 // 高性能且安全的关键字切片高亮解析函数 (100% 防御 XSS，避开危险的 v-html)
 const splitTextByQuery = (text, query) => {
   if (!text) return []
@@ -303,20 +400,243 @@ const splitTextByQuery = (text, query) => {
   }))
 }
 
+const isTextNode = (node) => node?.nodeType === Node.TEXT_NODE
+const isElementNode = (node) => node?.nodeType === Node.ELEMENT_NODE
+const isMentionNode = (node) => isElementNode(node) && node.dataset?.mentionRaw !== undefined
+const isLineBreakNode = (node) => isElementNode(node) && node.tagName === 'BR'
+const childIndex = (node) => Array.prototype.indexOf.call(node.parentNode?.childNodes || [], node)
+
+const getRawNodeLength = (node) => {
+  if (!node) return 0
+  if (isTextNode(node)) return node.textContent?.length || 0
+  if (isMentionNode(node)) return node.dataset.mentionRaw?.length || 0
+  if (isLineBreakNode(node)) return 1
+  return Array.from(node.childNodes || []).reduce((total, child) => total + getRawNodeLength(child), 0)
+}
+
+const serializeEditorNode = (node) => {
+  if (!node) return ''
+  if (isTextNode(node)) return node.textContent || ''
+  if (isMentionNode(node)) return node.dataset.mentionRaw || ''
+  if (isLineBreakNode(node)) return '\n'
+  return Array.from(node.childNodes || [])
+    .map((child) => serializeEditorNode(child))
+    .join('')
+}
+
+const serializeEditorContent = () => serializeEditorNode(inputRef.value)
+const getEditorRawValue = () => (inputRef.value ? serializeEditorContent() : inputValue.value)
+
+const getEditorMentionIconSvg = (type) => {
+  if (type === 'knowledge') {
+    return '<svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>'
+  }
+  if (type === 'skill') {
+    return '<svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>'
+  }
+  if (type === 'subagent') {
+    return '<svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>'
+  }
+  if (type === 'mcp') {
+    return '<svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a6 6 0 0 1-12 0V8Z"/></svg>'
+  }
+  return '<svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>'
+}
+
+const createEditorMentionElement = (segment) => {
+  const token = document.createElement('span')
+  token.className = `mention-ref-token mention-ref-${segment.type} mention-ref-editable`
+  token.contentEditable = 'false'
+  token.dataset.mentionRaw = segment.raw
+  token.dataset.mentionType = segment.type
+  token.dataset.mentionValue = segment.value
+  token.title = segment.raw
+
+  const icon = document.createElement('span')
+  icon.className = 'mention-ref-icon'
+  icon.innerHTML = getEditorMentionIconSvg(segment.type)
+  if (segment.type === 'file') {
+    icon.style.color = segment.value.endsWith('/') ? '#ffa940' : getFileIconColor(segment.value)
+  }
+  token.appendChild(icon)
+
+  const label = document.createElement('span')
+  label.className = 'mention-ref-label'
+  label.textContent = getMentionDisplayLabel(segment.type, segment.value, mentionDisplayLabels.value)
+  token.appendChild(label)
+
+  return token
+}
+
+const renderEditorContent = (raw = '') => {
+  const editor = inputRef.value
+  if (!editor) return
+
+  editor.replaceChildren()
+  parseMentionText(raw).forEach((segment) => {
+    editor.appendChild(
+      segment.kind === 'text' ? document.createTextNode(segment.text) : createEditorMentionElement(segment)
+    )
+  })
+  lastSyncedEditorValue = String(raw || '')
+}
+
+const isNodeInEditor = (node) => {
+  const editor = inputRef.value
+  if (!editor || !node) return false
+  const element = isElementNode(node) ? node : node.parentNode
+  return element === editor || editor.contains(element)
+}
+
+const getRawOffsetFromDomPoint = (container, offset) => {
+  const editor = inputRef.value
+  if (!editor || !isNodeInEditor(container)) return getEditorRawValue().length
+
+  let rawOffset = 0
+  let found = false
+
+  const visit = (node) => {
+    if (!node || found) return
+
+    if (node === container) {
+      if (isTextNode(node)) {
+        rawOffset += Math.min(offset, node.textContent?.length || 0)
+      } else if (isMentionNode(node)) {
+        rawOffset += offset > 0 ? getRawNodeLength(node) : 0
+      } else {
+        const children = Array.from(node.childNodes || [])
+        for (let index = 0; index < Math.min(offset, children.length); index++) {
+          rawOffset += getRawNodeLength(children[index])
+        }
+      }
+      found = true
+      return
+    }
+
+    if (isTextNode(node) || isMentionNode(node) || isLineBreakNode(node)) {
+      rawOffset += getRawNodeLength(node)
+      return
+    }
+
+    for (const child of Array.from(node.childNodes || [])) {
+      visit(child)
+      if (found) return
+    }
+  }
+
+  visit(editor)
+  return rawOffset
+}
+
+const getRawSelectionRange = () => {
+  const selection = window.getSelection()
+  if (!selection || selection.rangeCount === 0 || !isNodeInEditor(selection.anchorNode)) {
+    return getStoredRawSelectionRange()
+  }
+
+  const anchor = getRawOffsetFromDomPoint(selection.anchorNode, selection.anchorOffset)
+  const focus = getRawOffsetFromDomPoint(selection.focusNode, selection.focusOffset)
+  return rememberRawSelectionRange({
+    start: Math.min(anchor, focus),
+    end: Math.max(anchor, focus),
+    collapsed: anchor === focus
+  })
+}
+
+const getDomPointForRawOffset = (rawOffset) => {
+  const editor = inputRef.value
+  const offset = Math.max(0, Math.min(rawOffset, getEditorRawValue().length))
+  let remaining = offset
+
+  const pointBeforeNode = (node) => ({ node: node.parentNode || editor, offset: childIndex(node) })
+  const pointAfterNode = (node) => ({ node: node.parentNode || editor, offset: childIndex(node) + 1 })
+
+  const visit = (node) => {
+    if (!node) return null
+
+    if (isTextNode(node)) {
+      const length = node.textContent?.length || 0
+      if (remaining <= length) {
+        return { node, offset: remaining }
+      }
+      remaining -= length
+      return null
+    }
+
+    if (isMentionNode(node) || isLineBreakNode(node)) {
+      const length = getRawNodeLength(node)
+      if (remaining === 0) return pointBeforeNode(node)
+      if (remaining <= length) return pointAfterNode(node)
+      remaining -= length
+      return null
+    }
+
+    for (const child of Array.from(node.childNodes || [])) {
+      const point = visit(child)
+      if (point) return point
+    }
+
+    return node === editor ? { node: editor, offset: editor.childNodes.length } : null
+  }
+
+  return visit(editor) || { node: editor, offset: editor?.childNodes.length || 0 }
+}
+
+const restoreEditorSelection = (start, end = start) => {
+  const editor = inputRef.value
+  const selection = window.getSelection()
+  if (!editor || !selection) return
+
+  const startPoint = getDomPointForRawOffset(start)
+  const endPoint = getDomPointForRawOffset(end)
+  const range = document.createRange()
+  range.setStart(startPoint.node, startPoint.offset)
+  range.setEnd(endPoint.node, endPoint.offset)
+  selection.removeAllRanges()
+  selection.addRange(range)
+  rememberRawSelectionRange({ start, end, collapsed: start === end })
+  editor.focus()
+}
+
+const updateRawValue = (value, caretStart, caretEnd = caretStart) => {
+  renderEditorContent(value)
+  emit('update:modelValue', value)
+  nextTick(() => {
+    restoreEditorSelection(caretStart, caretEnd)
+    adjustTextareaHeight()
+    if (mentionEnabled.value) {
+      checkMentionTrigger()
+    }
+  })
+}
+
+const replaceCurrentRawSelection = (replacement) => {
+  const currentValue = getEditorRawValue()
+  const range = getRawSelectionRange()
+  const nextValue = replaceRawRange(currentValue, range.start, range.end, replacement)
+  const nextOffset = range.start + replacement.length
+  updateRawValue(nextValue, nextOffset)
+}
+
 // 检测是否在 @ 触发位置
-const checkMentionTrigger = (textarea) => {
-  if (!textarea || !mentionEnabled.value) return false
+const checkMentionTrigger = () => {
+  if (!inputRef.value || !mentionEnabled.value) return false
 
-  const cursorPos = textarea.selectionStart
-  const textBeforeCursor = inputValue.value.slice(0, cursorPos)
+  const selectionRange = getRawSelectionRange()
+  if (!selectionRange.collapsed) {
+    mentionPopupVisible.value = false
+    return false
+  }
 
-  // 检查是否以 @ 结尾（刚输入 @）或 @ 后有内容
-  const atMatch = textBeforeCursor.match(/@(\S*)$/)
-  if (atMatch) {
-    mentionQuery.value = atMatch[1]
+  const activeMention = findActiveMentionQuery(getEditorRawValue(), selectionRange.end)
+  if (activeMention) {
+    const sameQuery = mentionPopupVisible.value && mentionQuery.value === activeMention.query
+    mentionQuery.value = activeMention.query
     mentionPopupVisible.value = true
-    mentionSelectedIndex.value = 0
-    updateMentionItems(mentionQuery.value)
+    if (!sameQuery) {
+      mentionSelectedIndex.value = 0
+      updateMentionItems(mentionQuery.value)
+    }
     return true
   }
 
@@ -340,6 +660,7 @@ const updateMentionItems = (query = '') => {
         item.label,
         item.value,
         item.description,
+        item.resourceId,
         item.tokenLabel,
         item.type,
         mentionTypePrefixMap[item.type]
@@ -375,43 +696,46 @@ const updateMentionItems = (query = '') => {
       type: 'knowledge',
       insertValue: kbName,
       tokenLabel: formatMentionToken('knowledge', kbName),
-      description: kb.kb_id
+      description: kb.description || '',
+      resourceId: kb.kb_id
     }
   })
 
   const mcpItems = mcps.map((m) => {
-    const mcpName = m.name || ''
+    const mcpValue = m.slug || m.value || m.id || m.name || ''
+    const mcpLabel = m.name || m.label || mcpValue
     return {
-      value: mcpName,
-      label: mcpName,
+      value: mcpValue,
+      label: mcpLabel,
       type: 'mcp',
-      insertValue: mcpName,
-      tokenLabel: formatMentionToken('mcp', mcpName),
+      insertValue: mcpValue,
+      tokenLabel: formatMentionToken('mcp', mcpLabel),
       description: m.description || ''
     }
   })
 
   const skillItems = skills.map((skill) => {
-    const skillValue = skill.slug || skill.name || skill.id || ''
+    const skillValue = skill.slug || skill.value || skill.id || skill.name || ''
+    const skillLabel = skill.name || skill.label || skillValue
     return {
       value: skillValue,
-      label: skillValue,
+      label: skillLabel,
       type: 'skill',
       insertValue: skillValue,
-      tokenLabel: formatMentionToken('skill', skillValue),
+      tokenLabel: formatMentionToken('skill', skillLabel),
       description: skill.description || ''
     }
   })
 
   const subagentItems = subagents.map((subagent) => {
-    const subagentValue = subagent.id || subagent.value || subagent.name || ''
+    const subagentValue = subagent.id || subagent.value || subagent.slug || subagent.name || ''
     const subagentLabel = subagent.name || subagent.label || subagentValue
     return {
       value: subagentValue,
       label: subagentLabel,
       type: 'subagent',
       insertValue: subagentValue,
-      tokenLabel: formatMentionToken('subagent', subagentValue),
+      tokenLabel: formatMentionToken('subagent', subagentLabel),
       description: subagent.description || ''
     }
   })
@@ -531,28 +855,19 @@ const hasAnyItems = computed(() => {
 const insertMention = (item) => {
   if (!inputRef.value) return
 
-  const textarea = inputRef.value
-  const cursorPos = textarea.selectionStart
-  const textBeforeCursor = inputValue.value.slice(0, cursorPos)
+  const currentValue = getEditorRawValue()
+  const selectionRange = getRawSelectionRange()
+  const activeMention = findActiveMentionQuery(currentValue, selectionRange.end)
+  if (!activeMention) return
+
   const mentionValue = item.insertValue || item.value
-  const mentionText = formatMentionToken(item.type, mentionValue)
-
-  // 移除 @ 及后面的查询内容，插入完整的提及项
-  const newTextBefore = textBeforeCursor.replace(/@(\S*)$/, `${mentionText} `)
-  const textAfterCursor = inputValue.value.slice(cursorPos)
-
-  const newValue = newTextBefore + textAfterCursor
-  emit('update:modelValue', newValue)
-
-  // 重置光标位置到插入内容之后
-  nextTick(() => {
-    const newCursorPos = newTextBefore.length
-    textarea.setSelectionRange(newCursorPos, newCursorPos)
-    textarea.focus()
-  })
+  const mentionText = `${formatMentionToken(item.type, mentionValue)} `
+  const newValue = replaceRawRange(currentValue, activeMention.start, activeMention.end, mentionText)
+  const newCursorPos = activeMention.start + mentionText.length
 
   mentionPopupVisible.value = false
   mentionQuery.value = ''
+  updateRawValue(newValue, newCursorPos)
 }
 
 // 滚动到选中项
@@ -643,6 +958,27 @@ const inputValue = computed({
   set: (val) => emit('update:modelValue', val)
 })
 
+const handleMentionDeletion = (e) => {
+  if (e.key !== 'Backspace' && e.key !== 'Delete') return false
+
+  const currentValue = getEditorRawValue()
+  const selectionRange = getRawSelectionRange()
+  const expandedRange = expandMentionDeletionRange(
+    currentValue,
+    selectionRange.start,
+    selectionRange.end,
+    e.key === 'Delete' ? 'forward' : 'backward'
+  )
+
+  if (!expandedRange) return false
+
+  e.preventDefault()
+  const nextValue = replaceRawRange(currentValue, expandedRange.start, expandedRange.end, '')
+  mentionPopupVisible.value = false
+  updateRawValue(nextValue, expandedRange.start)
+  return true
+}
+
 // 处理键盘事件
 const handleKeyPress = (e) => {
   // @ 提及键盘导航
@@ -653,29 +989,69 @@ const handleKeyPress = (e) => {
     }
   }
 
+  if (handleMentionDeletion(e)) {
+    return
+  }
+
+  if (e.key === 'Enter' && e.shiftKey) {
+    e.preventDefault()
+    replaceCurrentRawSelection('\n')
+    return
+  }
+
   emit('keydown', e)
+}
+
+const shouldCheckMentionOnKeyUp = (e) => {
+  if (!e) return false
+  if (e.key.length === 1) return true
+  return e.key === 'Backspace' || e.key === 'Delete'
 }
 
 // 检测 @ 触发
 const handleKeyUp = (e) => {
-  if (e.key === '@' && mentionEnabled.value) {
+  if (!mentionEnabled.value || isComposing.value || !shouldCheckMentionOnKeyUp(e)) return
+  nextTick(() => {
+    checkMentionTrigger()
+  })
+}
+
+// 处理输入事件
+const handleInput = () => {
+  if (isComposing.value) return
+
+  if (inputRef.value && !inputRef.value.querySelector('.mention-ref-token')) {
+    const text = inputRef.value.textContent || ''
+    if (!text.trim()) {
+      inputRef.value.replaceChildren()
+    }
+  }
+
+  const value = serializeEditorContent()
+  lastSyncedEditorValue = value
+  emit('update:modelValue', value)
+  adjustTextareaHeight()
+
+  if (mentionEnabled.value) {
     nextTick(() => {
-      checkMentionTrigger(e.target)
+      checkMentionTrigger()
     })
   }
 }
 
-// 处理输入事件
-const handleInput = (e) => {
-  const value = e.target.value
-  emit('update:modelValue', value)
+const handlePaste = (e) => {
+  e.preventDefault()
+  const text = e.clipboardData?.getData('text/plain') || ''
+  replaceCurrentRawSelection(text)
+}
 
-  // 只要开启了提及功能，在任何输入事件时都使用正则表达式动态检测是否唤醒或更新弹出框
-  if (mentionEnabled.value) {
-    nextTick(() => {
-      checkMentionTrigger(e.target)
-    })
-  }
+const handleCompositionStart = () => {
+  isComposing.value = true
+}
+
+const handleCompositionEnd = () => {
+  isComposing.value = false
+  handleInput()
 }
 
 // 处理发送按钮点击
@@ -689,6 +1065,7 @@ const mentionQuery = ref('')
 const mentionItems = ref({ files: [], knowledgeBases: [], mcps: [], skills: [], subagents: [] })
 const mentionSelectedIndex = ref(0)
 const searchRequestId = ref(0)
+const isComposing = ref(false)
 let activeAbortController = null
 let mentionSearchTimer = null
 
@@ -709,23 +1086,27 @@ const focusInput = () => {
     // 聚焦回来时，如果开启了提及，自动检测当前光标位置是否处于 @提及 范围，是则重新升起弹框
     if (mentionEnabled.value) {
       nextTick(() => {
-        checkMentionTrigger(inputRef.value)
+        checkMentionTrigger()
       })
     }
   }
 }
 
 // 处理输入框点击事件，自适应检测光标是否落入 @提及 范围内以唤醒或更新弹窗
-const handleTextareaClick = (e) => {
+const handleEditorClick = () => {
   if (mentionEnabled.value) {
     nextTick(() => {
-      checkMentionTrigger(e.target)
+      checkMentionTrigger()
     })
   }
 }
 
 // 监听输入值变化
-watch(inputValue, () => {
+watch(inputValue, (value) => {
+  if (value !== lastSyncedEditorValue) {
+    renderEditorContent(value || '')
+  }
+
   if (debounceTimer.value) {
     clearTimeout(debounceTimer.value)
   }
@@ -740,6 +1121,7 @@ onMounted(() => {
   document.addEventListener('click', closeMentionPopup)
   nextTick(() => {
     if (inputRef.value) {
+      renderEditorContent(inputValue.value || '')
       adjustTextareaHeight()
       inputRef.value.focus()
     }
@@ -846,6 +1228,10 @@ defineExpose({
   font-family: inherit;
   min-height: 44px; /* Default min-height for multi-line */
   max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  cursor: text;
 
   &:focus {
     outline: none;
@@ -854,6 +1240,58 @@ defineExpose({
 
   &::placeholder {
     color: var(--gray-400);
+  }
+
+  &.mention-editor {
+    position: relative;
+
+    &:empty::before {
+      content: attr(data-placeholder);
+      position: absolute;
+      left: 0;
+      top: 0;
+      color: var(--gray-400);
+      pointer-events: none;
+    }
+  }
+
+  &[contenteditable='false'] {
+    cursor: not-allowed;
+  }
+
+  :deep(.mention-ref-token) {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 2px;
+    max-width: min(100%, 360px);
+    color: var(--main-700);
+    line-height: normal;
+    vertical-align: baseline;
+    white-space: nowrap;
+    user-select: all;
+  }
+
+  :deep(.mention-ref-icon) {
+    position: relative;
+    top: 2px;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    font-size: 13px;
+    line-height: 1;
+    margin-left: 4px;
+  }
+
+  :deep(.mention-ref-icon svg) {
+    display: block;
+  }
+
+  :deep(.mention-ref-label) {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: normal;
+    font-weight: 500;
   }
 }
 
@@ -992,6 +1430,7 @@ defineExpose({
     0 -4px 16px rgba(0, 0, 0, 0.08),
     0 4px 16px rgba(0, 0, 0, 0.12);
   border: 1px solid var(--gray-200);
+  padding: 8px 0;
 
   .mention-group {
     margin-bottom: 4px;
@@ -1020,6 +1459,35 @@ defineExpose({
     transition: all 0.15s ease;
     margin: 1px 4px;
     border-radius: 4px;
+
+    &.resource-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      padding: 6px 10px;
+
+      .resource-name {
+        color: var(--gray-800);
+        font-weight: 500;
+        flex: 0 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .resource-description {
+        color: var(--gray-500);
+        font-size: 12px;
+        line-height: 1.35;
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+    }
 
     &.file-item {
       display: flex;
@@ -1065,10 +1533,41 @@ defineExpose({
       }
     }
 
-    &:hover,
-    &.active {
+    &:hover {
       background-color: var(--main-10);
       color: var(--main-600);
+
+      &.resource-item {
+        .resource-name {
+          color: var(--main-600);
+        }
+        .resource-description {
+          color: var(--main-400);
+        }
+      }
+
+      &.file-item {
+        .file-info-left .file-name {
+          color: var(--main-600);
+        }
+        .file-parent-dir {
+          color: var(--main-400);
+        }
+      }
+    }
+
+    &.active {
+      background-color: var(--gray-50);
+      color: var(--main-600);
+
+      &.resource-item {
+        .resource-name {
+          color: var(--main-600);
+        }
+        .resource-description {
+          color: var(--main-400);
+        }
+      }
 
       &.file-item {
         .file-info-left .file-name {

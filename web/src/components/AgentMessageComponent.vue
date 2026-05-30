@@ -23,7 +23,9 @@
       <Check v-if="isCopied" size="14" />
       <Copy v-else size="14" />
     </div>
-    <p v-if="message.type === 'human'" class="message-text">{{ message.content }}</p>
+    <p v-if="message.type === 'human'" class="message-text">
+      <MentionTextRenderer :content="message.content" :display-labels="mentionDisplayLabels" />
+    </p>
 
     <p v-else-if="message.type === 'system'" class="message-text-system">{{ message.content }}</p>
 
@@ -139,11 +141,13 @@ import RefsComponent from '@/components/RefsComponent.vue'
 import { Copy, Check } from 'lucide-vue-next'
 import ToolCallsGroupComponent from '@/components/ToolCallsGroupComponent.vue'
 import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
+import MentionTextRenderer from '@/components/common/MentionTextRenderer.vue'
 import { useAgentStore } from '@/stores/agent'
 import { useInfoStore } from '@/stores/info'
 import { storeToRefs } from 'pinia'
 import { MessageProcessor } from '@/utils/messageProcessor'
 import { normalizeAttachmentPreviews } from '@/utils/file_utils'
+import { buildMentionDisplayLabels } from '@/utils/mention_utils'
 
 const props = defineProps({
   // 消息角色：'user'|'assistant'|'sent'|'received'
@@ -174,6 +178,10 @@ const props = defineProps({
   hideToolCalls: {
     type: Boolean,
     default: false
+  },
+  mention: {
+    type: Object,
+    default: () => null
   },
   // 是否显示调试信息 (已废弃，使用 infoStore.debugMode)
   debugMode: {
@@ -263,6 +271,8 @@ const imageAttachments = computed(() =>
 const fileAttachments = computed(() =>
   messageAttachments.value.filter((attachment) => !attachment.isImage || !attachment.previewUrl)
 )
+
+const mentionDisplayLabels = computed(() => buildMentionDisplayLabels(props.mention || {}))
 
 const messageSources = computed(() => {
   if (props.message.type === 'ai') {

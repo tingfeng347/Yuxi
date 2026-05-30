@@ -55,6 +55,7 @@
                     :is-processing="isDisplayMessageProcessing(row.conv, displayItem)"
                     :show-refs="showMsgRefs(displayItem.message)"
                     :hide-tool-calls="true"
+                    :mention="mentionConfig"
                     @retry="retryMessage(displayItem.message)"
                   >
                   </AgentMessageComponent>
