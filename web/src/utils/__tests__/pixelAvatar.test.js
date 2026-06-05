@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { generatePixelAvatar } from '../pixelAvatar.js'
 
-const decodeAvatarSvg = (avatar) => decodeURIComponent(avatar.replace('data:image/svg+xml,', ''))
+const DICEBEAR_GLYPHS_AVATAR_BASE_URL = 'https://api.dicebear.com/10.x/glyphs/svg'
 
 const run = () => {
   {
@@ -20,15 +20,22 @@ const run = () => {
 
   {
     const avatar = generatePixelAvatar('user-003')
-    assert.ok(avatar.startsWith('data:image/svg+xml,'), 'Should return an SVG data URL')
-    console.log('T3 Data URL prefix: PASS')
+    assert.equal(
+      avatar,
+      `${DICEBEAR_GLYPHS_AVATAR_BASE_URL}?seed=user-003`,
+      'Should return a DiceBear glyphs avatar URL'
+    )
+    console.log('T3 DiceBear URL: PASS')
   }
 
   {
-    const svg = decodeAvatarSvg(generatePixelAvatar('user-004'))
-    assert.ok(svg.includes('<svg'), 'Decoded output should contain an SVG tag')
-    assert.ok(svg.includes('<rect'), 'Decoded output should contain pixel rects')
-    console.log('T4 Decodable SVG: PASS')
+    const avatar = generatePixelAvatar(' user/中文 ')
+    assert.equal(
+      avatar,
+      `${DICEBEAR_GLYPHS_AVATAR_BASE_URL}?seed=user%2F%E4%B8%AD%E6%96%87`,
+      'Seed should be trimmed and URL encoded'
+    )
+    console.log('T4 Encoded seed: PASS')
   }
 
   {
