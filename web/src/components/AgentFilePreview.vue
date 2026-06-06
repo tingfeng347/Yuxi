@@ -134,7 +134,7 @@
         <iframe
           :key="`embedded-${htmlPreviewRenderKey}`"
           class="html-preview"
-          :srcdoc="formatContent(file?.content)"
+          :srcdoc="htmlPreviewSrcdoc"
           :title="filePath"
           sandbox="allow-scripts"
         />
@@ -217,7 +217,7 @@
               <iframe
                 :key="`fullscreen-${htmlPreviewRenderKey}`"
                 class="html-preview fullscreen-embed-preview"
-                :srcdoc="formatContent(file?.content)"
+                :srcdoc="htmlPreviewSrcdoc"
                 :title="filePath"
                 sandbox="allow-scripts"
               />
@@ -276,6 +276,8 @@ import {
 } from '@/utils/file_preview'
 
 const EDITABLE_EXTENSIONS = new Set(['.md', '.markdown', '.mdx', '.txt'])
+const HTML_PREVIEW_SCALE = 0.75
+const HTML_PREVIEW_SCALE_CSS = `html { zoom: ${HTML_PREVIEW_SCALE} !important; }`
 
 const props = defineProps({
   file: {
@@ -380,6 +382,7 @@ const isHtmlFile = computed(
     typeof props.file?.content === 'string' &&
     isHtmlPreview(props.filePath)
 )
+const htmlPreviewSrcdoc = computed(() => buildHtmlPreviewSrcdoc(props.file?.content))
 const codeThemeClass = computed(() => (themeStore.isDark ? 'hljs-theme-dark' : 'hljs-theme-light'))
 const codeLanguage = computed(() => getCodeLanguageByPath(props.filePath))
 const isCodePreview = computed(
@@ -411,6 +414,26 @@ const formatContent = (content) => {
   if (Array.isArray(content)) return content.join('\n')
   if (content === undefined || content === null) return ''
   return String(content)
+}
+
+const serializeDoctype = (doctype) => {
+  if (!doctype) return ''
+  const publicId = doctype.publicId ? ` PUBLIC "${doctype.publicId}"` : ''
+  const systemId = doctype.systemId ? ` "${doctype.systemId}"` : ''
+  return `<!DOCTYPE ${doctype.name}${publicId}${systemId}>`
+}
+
+const buildHtmlPreviewSrcdoc = (content) => {
+  const html = formatContent(content)
+  if (!html.trim() || typeof DOMParser === 'undefined') return html
+
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  const style = doc.createElement('style')
+  style.setAttribute('data-yuxi-html-preview-scale', String(HTML_PREVIEW_SCALE))
+  style.textContent = HTML_PREVIEW_SCALE_CSS
+  doc.head.append(style)
+
+  return `${serializeDoctype(doc.doctype)}${doc.documentElement.outerHTML}`
 }
 
 const syncDraftContent = () => {

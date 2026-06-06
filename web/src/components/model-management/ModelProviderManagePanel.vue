@@ -670,13 +670,14 @@ defineExpose({
               >（已启用 {{ provider.enabled_models.length }} 个）</span
             >
           </button>
-          <a-switch
-            size="small"
-            :checked="provider.is_enabled"
-            :loading="togglingProviderId === provider.provider_id"
-            @click.stop
-            @change="(checked) => toggleProviderEnabled(provider, checked)"
-          />
+          <span class="provider-enable-switch" @click.stop>
+            <a-switch
+              size="small"
+              :checked="provider.is_enabled"
+              :loading="togglingProviderId === provider.provider_id"
+              @change="(checked) => toggleProviderEnabled(provider, checked)"
+            />
+          </span>
         </template>
       </InfoCard>
     </ExtensionCardGrid>
@@ -1114,6 +1115,11 @@ defineExpose({
   &:hover {
     background: var(--main-50);
   }
+}
+
+.provider-enable-switch {
+  display: inline-flex;
+  align-items: center;
 }
 
 .enabled-count {
