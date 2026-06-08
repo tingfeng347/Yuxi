@@ -38,6 +38,7 @@
                     :show-refs="showMsgRefs(displayItem.message)"
                     :hide-tool-calls="true"
                     @retry="retryMessage(displayItem.message)"
+                    @undo="handleUndo"
                   >
                   </AgentMessageComponent>
                   <ToolCallsGroupComponent
@@ -52,9 +53,10 @@
                 <RefsComponent
                   v-if="shouldShowRefs(row.conv)"
                   :message="getLastMessage(row.conv)"
-                  :show-refs="['model', 'copy', 'sources']"
+                  :show-refs="['model', 'copy', 'sources', 'fork']"
                   :is-latest-message="false"
                   :sources="getConversationSources(row.conv)"
+                  @fork="handleFork(getLastMessage(row.conv))"
                 />
               </div>
               <div v-else class="chat-inline-notice">
@@ -232,6 +234,7 @@ import {
   onDeactivated,
   h
 } from 'vue'
+import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import AgentInputArea from '@/components/AgentInputArea.vue'
 import AgentMessageComponent from '@/components/AgentMessageComponent.vue'
@@ -270,6 +273,7 @@ const agentStore = useAgentStore()
 const chatThreadsStore = useChatThreadsStore()
 const chatUIStore = useChatUIStore()
 const configStore = useConfigStore()
+const router = useRouter()
 const {
   agents,
   selectedAgentId,
@@ -1868,6 +1872,55 @@ watch(currentChatId, (threadId, oldThreadId) => {
   if (threadId === oldThreadId) return
   emit('thread-change', threadId || '')
 })
+
+// ==================== Undo / Fork 时间旅行 ====================
+
+const handleUndo = async (msg) => {
+  const threadId = currentChatId.value
+  if (!threadId || !msg?.id) return
+
+  // 提取被撤销的用户消息文本，用于回填输入框
+  const undoneContent = msg.content || ''
+
+  try {
+    const result = await threadApi.undoThread(threadId, msg.id)
+    message.success('已撤销')
+
+    // 将被撤销的提示词回填到输入框，方便用户修改后重发
+    if (undoneContent) {
+      userInput.value = undoneContent
+    }
+
+    // 重新加载当前线程的消息历史
+    if (currentAgentId.value) {
+      await fetchThreadMessages({
+        agentId: currentAgentId.value,
+        threadId,
+      })
+      scrollController.scrollToBottom()
+    }
+  } catch (error) {
+    handleChatError(error, 'undo')
+  }
+}
+
+const handleFork = async (msg) => {
+  const threadId = currentChatId.value
+  if (!threadId || !msg?.id) return
+
+  try {
+    const result = await threadApi.forkThread(threadId, msg.id)
+    message.success('已分叉到新会话')
+
+    // 跳转到新会话
+    const newThreadId = result.new_thread_id
+    if (newThreadId) {
+      router.push({ name: 'AgentCompWithThreadId', params: { thread_id: newThreadId } })
+    }
+  } catch (error) {
+    handleChatError(error, 'fork')
+  }
+}
 </script>
 
 <style lang="less" scoped>

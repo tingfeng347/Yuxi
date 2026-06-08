@@ -246,6 +246,9 @@ class PostgresManager(metaclass=SingletonMeta):
             "CREATE INDEX IF NOT EXISTS ix_conversations_is_pinned ON conversations(is_pinned)",
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_model_providers_provider_id ON model_providers(provider_id)",
             "CREATE INDEX IF NOT EXISTS ix_model_providers_is_enabled ON model_providers(is_enabled)",
+            # Undo/Fork 递归 CTE 性能索引
+            "CREATE INDEX IF NOT EXISTS idx_checkpoints_thread_parent ON checkpoints(thread_id, parent_checkpoint_id)",
+            "CREATE INDEX IF NOT EXISTS idx_checkpoints_thread_request ON checkpoints(thread_id, (metadata->>'request_id'))",
         ]
         async with self.async_engine.begin() as conn:
             for stmt in stmts:

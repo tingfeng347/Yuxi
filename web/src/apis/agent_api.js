@@ -414,5 +414,24 @@ export const threadApi = {
    * @returns {Promise}
    */
   deleteThreadAttachment: (threadId, fileId) =>
-    apiDelete(`/api/chat/thread/${threadId}/attachments/${fileId}`)
+    apiDelete(`/api/chat/thread/${threadId}/attachments/${fileId}`),
+
+  /**
+   * 撤销对话到指定消息
+   * @param {string} threadId
+   * @param {number} messageId
+   * @returns {Promise}
+   */
+  undoThread: (threadId, messageId) =>
+    apiPost(`/api/chat/thread/${threadId}/undo`, { message_id: messageId }),
+
+  /**
+   * 从指定消息处分叉出新会话
+   * @param {string} threadId
+   * @param {number} messageId
+   * @param {string} [title] 新分支标题
+   * @returns {Promise}
+   */
+  forkThread: (threadId, messageId, title) =>
+    apiPost(`/api/chat/thread/${threadId}/fork`, { message_id: messageId, title }),
 }

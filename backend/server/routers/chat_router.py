@@ -40,6 +40,15 @@ from yuxi.services.thread_files_service import (
     save_thread_artifact_to_workspace_view,
 )
 from yuxi.services.feedback_service import get_message_feedback_view, submit_message_feedback_view
+from yuxi.services.thread_undo_service import (
+    UndoConflictError,
+    UndoValidationError,
+    undo_thread,
+)
+from yuxi.services.thread_fork_service import (
+    ForkValidationError,
+    fork_thread,
+)
 from yuxi.repositories.agent_config_repository import AgentConfigRepository
 from yuxi.utils.logging_config import logger
 from yuxi.utils.image_processor import process_uploaded_image
@@ -938,6 +947,89 @@ async def get_message_feedback(
         db=db,
         current_user_id=str(current_user.id),
     )
+
+
+# =============================================================================
+# > === Undo / Fork 时间旅行分组 ===
+# =============================================================================
+
+
+class UndoRequest(BaseModel):
+    message_id: int = Field(..., description="要撤销到的目标消息 ID")
+
+
+class UndoResponse(BaseModel):
+    message: str
+    thread_id: str
+    deleted_message_count: int
+    deleted_agent_run_count: int
+    undo_point_message_id: int | None = None
+
+
+class ForkRequest(BaseModel):
+    message_id: int = Field(..., description="分叉起点的消息 ID")
+    title: str | None = Field(None, description="新分支会话标题")
+
+
+class ForkResponse(BaseModel):
+    message: str
+    new_thread_id: str
+    cloned_message_count: int
+    cloned_checkpoint_count: int
+
+
+@chat.post("/thread/{thread_id}/undo", response_model=UndoResponse)
+async def undo_thread_route(
+    thread_id: str,
+    payload: UndoRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_required_user),
+):
+    """撤销对话：将指定消息及其之后的所有消息回退，回滚 AI 推理状态。"""
+    try:
+        result = await undo_thread(
+            db=db,
+            thread_id=thread_id,
+            message_id=payload.message_id,
+            user_id=str(current_user.id),
+        )
+        await db.commit()
+        return UndoResponse(**result)
+    except UndoValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except UndoConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        logger.error(f"Undo 操作失败: {e}, {traceback.format_exc()}")
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"撤销失败: {str(e)}")
+
+
+@chat.post("/thread/{thread_id}/fork", response_model=ForkResponse)
+async def fork_thread_route(
+    thread_id: str,
+    payload: ForkRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_required_user),
+):
+    """分叉对话：从指定消息处克隆出一个全新的独立会话分支。"""
+    try:
+        result = await fork_thread(
+            db=db,
+            thread_id_a=thread_id,
+            message_id=payload.message_id,
+            title=payload.title,
+            user_id=str(current_user.id),
+        )
+        await db.commit()
+        return ForkResponse(**result)
+    except ForkValidationError as e:
+        await db.rollback()
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logger.error(f"Fork 操作失败: {e}, {traceback.format_exc()}")
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"分叉失败: {str(e)}")
 
 
 # =============================================================================
