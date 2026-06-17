@@ -1,5 +1,5 @@
 <template>
-  <div class="ai-textarea-wrapper">
+  <div class="ai-textarea-wrapper" :class="`action-${actionPlacement}`">
     <a-textarea
       :value="modelValue"
       @update:value="$emit('update:modelValue', $event)"
@@ -54,6 +54,10 @@ const props = defineProps({
   files: {
     type: Array,
     default: () => []
+  },
+  actionPlacement: {
+    type: String,
+    default: 'inside'
   }
 })
 
@@ -114,6 +118,26 @@ const generateDescription = async () => {
 
     .ai-text {
       font-weight: 500;
+    }
+  }
+
+  &.action-header {
+    .ai-btn {
+      top: -31px;
+      right: 0;
+      height: 26px;
+      padding: 0 9px;
+      border-radius: 6px;
+      background: var(--gray-0);
+      border-color: var(--gray-150);
+      color: var(--main-700);
+      box-shadow: 0 1px 2px var(--shadow-1);
+
+      &:hover {
+        background: var(--gray-50);
+        border-color: var(--gray-200);
+        color: var(--gray-900);
+      }
     }
   }
 }

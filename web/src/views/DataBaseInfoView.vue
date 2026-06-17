@@ -252,6 +252,7 @@
             :name="editForm.name"
             :files="fileList"
             placeholder="请输入知识库描述"
+            action-placement="header"
             :rows="4"
           />
         </a-form-item>
@@ -466,7 +467,9 @@ const formatStatNumber = (value) => {
 const formatTokenStatNumber = (value) => {
   const number = Number(value ?? 0)
   if (!Number.isFinite(number)) return '0'
-  if (number > 10000) return `${Math.round(number / 1000)}K`
+  const absNumber = Math.abs(number)
+  if (absNumber > 1024 * 1000) return `${(number / 1_000_000).toFixed(1)} m`
+  if (absNumber >= 1000) return `${Math.round(number / 1000).toLocaleString('zh-CN')} k`
   return number.toLocaleString('zh-CN')
 }
 

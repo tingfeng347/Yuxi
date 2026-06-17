@@ -1181,7 +1181,7 @@ import FileTypeIcon from '@/components/common/FileTypeIcon.vue'
   flex-grow: 1;
   flex-direction: column;
   max-height: 100%;
-  background: var(--gray-10);
+  background: var(--gray-0);
   overflow: hidden;
   border-radius: 12px;
   border: 1px solid var(--gray-150);
@@ -1194,7 +1194,7 @@ import FileTypeIcon from '@/components/common/FileTypeIcon.vue'
   justify-content: space-between;
   align-items: center;
   flex-shrink: 0;
-  padding: 12px;
+  padding: 12px 12px 4px;
 }
 
 .panel-actions {
@@ -1278,10 +1278,17 @@ import FileTypeIcon from '@/components/common/FileTypeIcon.vue'
 .my-table {
   flex: 1;
   overflow: auto;
-  background-color: transparent;
+  background-color: var(--gray-0);
   min-height: 0;
   table-layout: fixed;
   padding: 0 8px;
+}
+
+.my-table :deep(.ant-table),
+.my-table :deep(.ant-table-container),
+.my-table :deep(.ant-table-thead > tr > th),
+.my-table :deep(.ant-table-tbody > tr > td) {
+  background-color: var(--gray-0) !important;
 }
 
 .my-table .main-btn {
