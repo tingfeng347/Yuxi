@@ -349,7 +349,9 @@ async def _save_ai_message(
     thread_id: str,
     msg_dict: dict,
     trace_info: dict[str, Any] | None = None,
-) -> None:
+    run_id: str | None = None,
+    request_id: str | None = None,
+):
     content = msg_dict.get("content", "")
     tool_calls_data = msg_dict.get("tool_calls") or []
     if isinstance(content, list):
@@ -374,6 +376,8 @@ async def _save_ai_message(
         content=content,
         message_type="text",
         extra_metadata=extra_metadata,
+        run_id=run_id,
+        request_id=request_id,
     )
 
     if ai_msg and tool_calls_data:
@@ -385,6 +389,8 @@ async def _save_ai_message(
                 status="pending",
                 langgraph_tool_call_id=tc.get("id"),
             )
+
+    return ai_msg
 
 
 async def _save_tool_message(conv_repo: ConversationRepository, msg_dict: dict) -> None:
@@ -413,6 +419,8 @@ async def save_partial_message(
     error_message: str | None = None,
     error_type: str = "interrupted",
     trace_info: dict[str, Any] | None = None,
+    run_id: str | None = None,
+    request_id: str | None = None,
 ):
     try:
         extra_metadata = {
@@ -436,6 +444,8 @@ async def save_partial_message(
             content=content,
             message_type="text",
             extra_metadata=extra_metadata,
+            run_id=run_id,
+            request_id=request_id,
         )
 
     except Exception as e:
@@ -449,6 +459,8 @@ async def save_messages_from_langgraph_state(
     conv_repo: ConversationRepository,
     config_dict: dict,
     trace_info: dict[str, Any] | None = None,
+    run_id: str | None = None,
+    request_id: str | None = None,
 ) -> None:
     messages = await _get_langgraph_messages(agent_instance, config_dict)
     if messages is None:
@@ -456,6 +468,7 @@ async def save_messages_from_langgraph_state(
 
     existing_ids = await _get_existing_message_ids(conv_repo, thread_id)
 
+    last_ai_message = None
     for msg in messages:
         if hasattr(msg, "model_dump"):
             msg_dict = msg.model_dump()
@@ -479,9 +492,21 @@ async def save_messages_from_langgraph_state(
             continue
 
         if msg_type == "ai":
-            await _save_ai_message(conv_repo, thread_id, msg_dict, trace_info=trace_info)
+            last_ai_message = await _save_ai_message(
+                conv_repo,
+                thread_id,
+                msg_dict,
+                trace_info=trace_info,
+                run_id=run_id,
+                request_id=request_id,
+            )
         elif msg_type == "tool":
             await _save_tool_message(conv_repo, msg_dict)
+
+    if run_id and last_ai_message:
+        run_repo = AgentRunRepository(conv_repo.db)
+        await run_repo.set_output_message(run_id, last_ai_message.id)
+        await conv_repo.db.commit()
 
 
 def _extract_interrupt_info(state) -> Any | None:
@@ -837,6 +862,8 @@ async def agent_chat(
                 full_msg,
                 "content_guard_blocked",
                 trace_info=trace_info,
+                run_id=meta.get("run_id"),
+                request_id=meta.get("request_id"),
             )
             return {
                 "status": "interrupted",
@@ -859,6 +886,8 @@ async def agent_chat(
                 conv_repo=conv_repo,
                 config_dict=langgraph_config,
                 trace_info=trace_info,
+                run_id=meta.get("run_id"),
+                request_id=meta.get("request_id"),
             )
         except Exception as e:
             logger.exception(f"Error saving messages from LangGraph state: {e}")
@@ -1098,6 +1127,8 @@ async def stream_agent_chat(
                             full_msg,
                             "content_guard_blocked",
                             trace_info=trace_info,
+                            run_id=meta.get("run_id"),
+                            request_id=meta.get("request_id"),
                         )
                         meta["time_cost"] = asyncio.get_event_loop().time() - start_time
                         yield make_chunk(status="interrupted", message="检测到敏感内容，已中断输出", meta=meta)
@@ -1121,6 +1152,8 @@ async def stream_agent_chat(
                 full_msg,
                 "content_guard_blocked",
                 trace_info=trace_info,
+                run_id=meta.get("run_id"),
+                request_id=meta.get("request_id"),
             )
             meta["time_cost"] = asyncio.get_event_loop().time() - start_time
             yield make_chunk(status="interrupted", message="检测到敏感内容，已中断输出", meta=meta)
@@ -1152,6 +1185,8 @@ async def stream_agent_chat(
                 conv_repo=conv_repo,
                 config_dict=langgraph_config,
                 trace_info=trace_info,
+                run_id=meta.get("run_id"),
+                request_id=meta.get("request_id"),
             )
         except Exception as e:
             logger.exception(f"Error saving messages from LangGraph state: {e}")
@@ -1178,6 +1213,8 @@ async def stream_agent_chat(
                     error_message="对话已中断" if not full_msg else None,
                     error_type="interrupted",
                     trace_info=trace_info,
+                    run_id=meta.get("run_id"),
+                    request_id=meta.get("request_id"),
                 )
 
         cleanup_task = asyncio.create_task(save_cleanup())
@@ -1207,6 +1244,8 @@ async def stream_agent_chat(
                 error_message=error_msg,
                 error_type=error_type,
                 trace_info=trace_info,
+                run_id=meta.get("run_id"),
+                request_id=meta.get("request_id"),
             )
 
         yield make_chunk(status="error", error_type=error_type, error_message=error_msg, meta=meta)
@@ -1364,6 +1403,8 @@ async def stream_agent_resume(
                 conv_repo=conv_repo,
                 config_dict=langgraph_config,
                 trace_info=trace_info,
+                run_id=meta.get("run_id"),
+                request_id=meta.get("request_id"),
             )
         except Exception as e:
             logger.exception(f"Error saving messages from LangGraph state: {e}")
@@ -1385,6 +1426,8 @@ async def stream_agent_resume(
                 error_message="对话恢复已中断",
                 error_type="resume_interrupted",
                 trace_info=trace_info,
+                run_id=meta.get("run_id"),
+                request_id=meta.get("request_id"),
             )
 
         yield make_resume_chunk(status="interrupted", message="对话恢复已中断", meta=meta)
@@ -1400,6 +1443,8 @@ async def stream_agent_resume(
                 error_message=f"Error during resume: {e}",
                 error_type="resume_error",
                 trace_info=trace_info,
+                run_id=meta.get("run_id"),
+                request_id=meta.get("request_id"),
             )
 
         yield make_resume_chunk(message=f"Error during resume: {e}", status="error")
