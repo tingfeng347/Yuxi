@@ -4,6 +4,7 @@ import typer
 from rich.console import Console
 
 from yuxi_cli import __version__
+from yuxi_cli.agent_eval import AgentEvalError, AgentEvalOptions, run_langfuse_agent_experiment
 from yuxi_cli.client import ClientError
 from yuxi_cli.commands import (
     CommandError,
@@ -23,7 +24,9 @@ from yuxi_cli.config import ConfigError, ConfigStore
 console = Console()
 app = typer.Typer(help="Yuxi command line client.", invoke_without_command=True)
 remote_app = typer.Typer(help="Manage Yuxi remotes.")
+agent_app = typer.Typer(help="Run and manage Yuxi agents.")
 app.add_typer(remote_app, name="remote")
+app.add_typer(agent_app, name="agent")
 
 
 def _store() -> ConfigStore:
@@ -129,4 +132,26 @@ def logout(
     try:
         logout_command(_store(), remote, local_only, console)
     except (ConfigError, ClientError) as exc:
+        _handle_error(exc)
+
+
+@agent_app.command("eval")
+def eval_agent(
+    dataset_name: str = typer.Option(..., "--dataset-name", help="Langfuse dataset name."),
+    agent_slug: str = typer.Option(..., "--agent-slug", help="Yuxi agent slug."),
+    experiment_name: str | None = typer.Option(None, "--experiment-name", help="Langfuse experiment name."),
+    remote: str | None = typer.Option(None, "--remote", help="Remote name."),
+    max_concurrency: int = typer.Option(1, "--max-concurrency", help="Langfuse experiment max concurrency."),
+    timeout_seconds: float = typer.Option(900, "--timeout-seconds", help="Per item Yuxi API timeout."),
+):
+    options = AgentEvalOptions(
+        dataset_name=dataset_name,
+        agent_slug=agent_slug,
+        experiment_name=experiment_name,
+        max_concurrency=max_concurrency,
+        timeout_seconds=timeout_seconds,
+    )
+    try:
+        run_langfuse_agent_experiment(_store(), remote, options, console)
+    except (ConfigError, ClientError, AgentEvalError) as exc:
         _handle_error(exc)

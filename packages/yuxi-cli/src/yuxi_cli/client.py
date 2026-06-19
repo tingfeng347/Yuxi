@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlencode
 
 import httpx
@@ -69,6 +70,27 @@ class YuxiClient:
     def delete_api_key(self, api_key_id: str) -> dict:
         return self._request("DELETE", f"/user/apikey/{api_key_id}")
 
+    def run_agent_eval(
+        self,
+        *,
+        query: str,
+        agent_slug: str,
+        evaluation: dict,
+        meta: dict | None = None,
+        image_content: str | None = None,
+        model_spec: str | None = None,
+        timeout_seconds: float = 900,
+    ) -> dict:
+        payload = {
+            "query": query,
+            "agent_slug": agent_slug,
+            "evaluation": evaluation,
+            "meta": meta or {},
+            "image_content": image_content,
+            "model_spec": model_spec,
+        }
+        return self._request("POST", "/agent/eval/runs", json=payload, timeout=timeout_seconds)
+
     def authorize_url(self, session: CLIAuthSession) -> str:
         return build_url(self.remote.url, session.authorize_path)
 
@@ -80,6 +102,7 @@ class YuxiClient:
         auth: bool = True,
         api_key: str | None = None,
         json: dict | None = None,
+        timeout: float | None = None,
     ) -> dict:
         headers = {}
         token = api_key if api_key is not None else self.remote.api_key
@@ -87,8 +110,11 @@ class YuxiClient:
             headers["Authorization"] = f"Bearer {token}"
 
         url = f"{self.remote.api_base_url}{path if path.startswith('/') else f'/{path}'}"
+        request_kwargs: dict[str, Any] = {"headers": headers, "json": json}
+        if timeout is not None:
+            request_kwargs["timeout"] = timeout
         try:
-            response = self.client.request(method, url, headers=headers, json=json)
+            response = self.client.request(method, url, **request_kwargs)
         except httpx.HTTPError as exc:
             # 网络层错误（连接失败、超时等）没有 HTTP 状态码，视为可重试的瞬时错误。
             raise ClientError(f"请求远程失败: {exc}") from exc
