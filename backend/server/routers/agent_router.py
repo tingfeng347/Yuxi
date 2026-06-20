@@ -20,6 +20,7 @@ from yuxi.services.agent_run_service import (
     cancel_agent_run_view,
     create_agent_run_view,
     get_active_run_by_thread,
+    get_agent_run_result_view,
     get_agent_run_view,
     stream_agent_run_events,
 )
@@ -307,6 +308,13 @@ async def get_agent_run(
     run_id: str, current_user: User = Depends(get_required_user), db: AsyncSession = Depends(get_db)
 ):
     return await get_agent_run_view(run_id=run_id, current_uid=str(current_user.uid), db=db)
+
+
+@agent_router.get("/runs/{run_id}/result")
+async def get_agent_run_result(
+    run_id: str, current_user: User = Depends(get_required_user), db: AsyncSession = Depends(get_db)
+):
+    return await get_agent_run_result_view(run_id=run_id, current_uid=str(current_user.uid), db=db)
 
 
 @agent_router.post("/runs/{run_id}/cancel")
