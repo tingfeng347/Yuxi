@@ -156,7 +156,7 @@ def run_kb_upload(
     if not options.yes and not typer.confirm("确认上传?", default=True):
         raise KbUploadError("已取消")
 
-    uploaded, failed = upload_files(
+    uploaded, failed, add_response = upload_files(
         remote,
         client_factory,
         kb_id,
@@ -166,13 +166,11 @@ def run_kb_upload(
     )
     summary.uploaded = uploaded
     summary.upload_failed = failed
+    summary.add_response = add_response
 
     if not uploaded:
         _print_final_summary(summary, console)
         raise KbUploadError("所有文件上传失败，未添加文档记录")
-
-    with client_factory(remote) as client:
-        summary.add_response = add_uploaded_documents(client, kb_id, uploaded)
 
     _print_final_summary(summary, console)
     if failed or summary.add_failed_count:
@@ -310,24 +308,33 @@ def upload_files(
     *,
     concurrency: int,
     console: Console,
-) -> tuple[list[UploadResult], list[UploadResult]]:
+) -> tuple[list[UploadResult], list[UploadResult], dict | None]:
     uploaded: list[UploadResult] = []
     failed: list[UploadResult] = []
+    add_response: dict | None = None
 
-    def upload_one(item: LocalFile) -> UploadResult:
-        return _upload_one_with_retry(remote, client_factory, kb_id, item)
+    def upload_and_add_one(item: LocalFile) -> tuple[UploadResult, dict | None]:
+        result = _upload_one_with_retry(remote, client_factory, kb_id, item)
+        if not result.success:
+            return result, None
+        with client_factory(remote) as client:
+            response = add_uploaded_documents(client, kb_id, [result])
+        return result, response
 
-    def record_result(result: UploadResult, completed: int) -> None:
+    def record_result(result: UploadResult, response: dict | None, completed: int) -> None:
+        nonlocal add_response
         if result.success:
             uploaded.append(result)
+            if response:
+                add_response = _merge_add_response(add_response, response)
             return
         failed.append(result)
         console.print(f"[red]✗[/red] {result.local_file.relative_path} ({completed}/{len(files)}): {result.error}")
 
-    console.print(f"开始上传: {len(files)} 个文件，并发 {concurrency}")
+    console.print(f"开始上传并添加: {len(files)} 个文件，并发 {concurrency}")
     try:
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
-            future_map = {executor.submit(upload_one, item): item for item in files}
+            future_map = {executor.submit(upload_and_add_one, item): item for item in files}
             if console.is_terminal:
                 progress = Progress(
                     TextColumn("[progress.description]{task.description}"),
@@ -339,25 +346,27 @@ def upload_files(
                 )
                 completed = 0
                 with progress:
-                    task_id = progress.add_task("上传进度", total=len(files))
+                    task_id = progress.add_task("处理进度", total=len(files))
                     for future in as_completed(future_map):
                         completed += 1
-                        record_result(future.result(), completed)
+                        result, response = future.result()
+                        record_result(result, response, completed)
                         progress.advance(task_id)
             else:
                 completed = 0
                 progress_step = max(1, len(files) // 10)
                 for future in as_completed(future_map):
                     completed += 1
-                    record_result(future.result(), completed)
+                    result, response = future.result()
+                    record_result(result, response, completed)
                     if completed == len(files) or completed % progress_step == 0:
-                        console.print(f"上传进度: {completed}/{len(files)}")
+                        console.print(f"处理进度: {completed}/{len(files)}")
     except KeyboardInterrupt as exc:
-        raise KbUploadError("已取消上传队列，未添加文档记录") from exc
+        raise KbUploadError("已取消上传队列，请查看已完成的文档记录") from exc
 
     uploaded.sort(key=lambda item: item.local_file.relative_path)
     failed.sort(key=lambda item: item.local_file.relative_path)
-    return uploaded, failed
+    return uploaded, failed, add_response
 
 
 def add_uploaded_documents(client: YuxiClient, kb_id: str, uploaded: list[UploadResult]) -> dict:
@@ -369,6 +378,29 @@ def add_uploaded_documents(client: YuxiClient, kb_id: str, uploaded: list[Upload
         "source_paths": {result.file_path: result.local_file.relative_path for result in uploaded if result.file_path},
     }
     return client.add_uploaded_documents(kb_id, items, params)
+
+
+def _merge_add_response(current: dict | None, response: dict) -> dict:
+    if current is None:
+        current = {"items": [], "failed_items": [], "added": 0, "failed": 0}
+
+    current["items"].extend(response.get("items") or [])
+    current["failed_items"].extend(response.get("failed_items") or [])
+    current["added"] += int(response.get("added") or 0)
+    current["failed"] += int(response.get("failed") or 0)
+
+    added = int(current["added"])
+    failed = int(current["failed"])
+    if failed == 0:
+        current["status"] = "success"
+        current["message"] = f"已添加 {added} 个文件"
+    elif added == 0:
+        current["status"] = "failed"
+        current["message"] = f"文件添加失败，失败 {failed} 个"
+    else:
+        current["status"] = "partial_failed"
+        current["message"] = f"已添加 {added} 个文件，失败 {failed} 个"
+    return current
 
 
 def _local_file_from_path(path: Path, relative_path: str) -> tuple[list[LocalFile], list[SkippedFile]]:

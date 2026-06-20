@@ -67,7 +67,7 @@ yuxi kb upload ./docs --kb-id kb_xxx --concurrency 4
 yuxi kb upload ./docs --include-ext md,html,docx
 ```
 
-上传会保留目录中的相对路径，便于在知识库文件列表中按原目录结构查看。
+CLI 会让每个并发单元完成单个文件的上传和文档记录添加，`--concurrency` 仍控制同时处理的文件数。上传会保留目录中的相对路径，便于在知识库文件列表中按原目录结构查看。
 
 ## 运行智能体评估
 

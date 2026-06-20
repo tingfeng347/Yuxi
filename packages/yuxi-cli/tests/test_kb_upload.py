@@ -28,6 +28,8 @@ from yuxi_cli.kb_upload import (
 class FakeKbClient:
     uploaded: list[str] = []
     add_payload: dict | None = None
+    add_payloads: list[dict] = []
+    events: list[tuple[str, str | list[str]]] = []
     active_uploads = 0
     max_active_uploads = 0
     lock = threading.Lock()
@@ -45,6 +47,8 @@ class FakeKbClient:
     def reset(cls) -> None:
         cls.uploaded = []
         cls.add_payload = None
+        cls.add_payloads = []
+        cls.events = []
         cls.active_uploads = 0
         cls.max_active_uploads = 0
 
@@ -102,7 +106,9 @@ class FakeKbClient:
             type(self).max_active_uploads = max(type(self).max_active_uploads, type(self).active_uploads)
         try:
             time.sleep(0.02)
-            type(self).uploaded.append(path.name)
+            with self.lock:
+                type(self).uploaded.append(path.name)
+                type(self).events.append(("upload", path.name))
             return {
                 "file_path": f"minio://knowledgebases/{kb_id}/upload/{path.name}",
                 "content_hash": f"hash-{path.name}",
@@ -113,7 +119,27 @@ class FakeKbClient:
                 type(self).active_uploads -= 1
 
     def add_uploaded_documents(self, kb_id: str, items: list[str], params: dict):
-        type(self).add_payload = {"kb_id": kb_id, "items": items, "params": params}
+        payload = {"kb_id": kb_id, "items": list(items), "params": params}
+        item_names = [item.rsplit("/", 1)[-1] for item in items]
+        with self.lock:
+            type(self).add_payloads.append(payload)
+            type(self).events.append(("add", item_names))
+            if type(self).add_payload is None:
+                type(self).add_payload = {
+                    "kb_id": kb_id,
+                    "items": list(items),
+                    "params": {
+                        "content_type": params.get("content_type"),
+                        "content_hashes": dict(params.get("content_hashes") or {}),
+                        "file_sizes": dict(params.get("file_sizes") or {}),
+                        "source_paths": dict(params.get("source_paths") or {}),
+                    },
+                }
+            else:
+                type(self).add_payload["items"].extend(items)
+                type(self).add_payload["params"]["content_hashes"].update(params.get("content_hashes") or {})
+                type(self).add_payload["params"]["file_sizes"].update(params.get("file_sizes") or {})
+                type(self).add_payload["params"]["source_paths"].update(params.get("source_paths") or {})
         return {"status": "success", "added": len(items), "failed": 0, "items": [], "failed_items": []}
 
 
@@ -234,6 +260,31 @@ def test_kb_upload_limits_upload_concurrency(tmp_path):
     assert FakeKbClient.max_active_uploads > 1
 
 
+def test_kb_upload_adds_each_document_after_its_upload(tmp_path):
+    FakeKbClient.reset()
+    for index in range(5):
+        (tmp_path / f"{index}.md").write_text("demo", encoding="utf-8")
+
+    summary = run_kb_upload(
+        _store(tmp_path),
+        None,
+        KbUploadOptions(path=tmp_path, kb_id="kb_1", yes=True, concurrency=2),
+        _console(),
+        client_factory=FakeKbClient,
+    )
+
+    added_names = [[item.rsplit("/", 1)[-1] for item in payload["items"]] for payload in FakeKbClient.add_payloads]
+    assert all(len(items) == 1 for items in added_names)
+    assert sorted(item for items in added_names for item in items) == [f"{index}.md" for index in range(5)]
+    for index in range(5):
+        name = f"{index}.md"
+        upload_index = FakeKbClient.events.index(("upload", name))
+        add_index = FakeKbClient.events.index(("add", [name]))
+        assert upload_index < add_index
+    assert summary.add_response is not None
+    assert summary.add_response["added"] == 5
+
+
 def test_upload_files_uses_log_progress_for_non_tty_console(tmp_path):
     FakeKbClient.reset()
     files = []
@@ -244,7 +295,7 @@ def test_upload_files_uses_log_progress_for_non_tty_console(tmp_path):
     buffer = io.StringIO()
     console = Console(file=buffer, force_terminal=False)
 
-    uploaded, failed = upload_files(
+    uploaded, failed, add_response = upload_files(
         Remote(name="local", url="http://localhost", api_key="yxkey_test"),
         FakeKbClient,
         "kb_1",
@@ -256,7 +307,9 @@ def test_upload_files_uses_log_progress_for_non_tty_console(tmp_path):
     output = buffer.getvalue()
     assert len(uploaded) == 3
     assert failed == []
-    assert "上传进度: 3/3" in output
+    assert add_response is not None
+    assert add_response["added"] == 3
+    assert "处理进度: 3/3" in output
     assert "✓" not in output
 
 
@@ -270,7 +323,7 @@ def test_upload_files_uses_progress_bar_for_tty_console(tmp_path):
     buffer = io.StringIO()
     console = Console(file=buffer, force_terminal=True, color_system=None, width=100)
 
-    uploaded, failed = upload_files(
+    uploaded, failed, add_response = upload_files(
         Remote(name="local", url="http://localhost", api_key="yxkey_test"),
         FakeKbClient,
         "kb_1",
@@ -282,8 +335,10 @@ def test_upload_files_uses_progress_bar_for_tty_console(tmp_path):
     output = buffer.getvalue()
     assert len(uploaded) == 3
     assert failed == []
-    assert "上传进度" in output
-    assert "上传进度:" not in output
+    assert add_response is not None
+    assert add_response["added"] == 3
+    assert "处理进度" in output
+    assert "处理进度:" not in output
     assert "0.md" not in output
 
 
