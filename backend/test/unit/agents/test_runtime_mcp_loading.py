@@ -51,6 +51,33 @@ async def test_runtime_config_middleware_adds_context_mcp_tools(monkeypatch):
     assert [tool.name for tool in captured["tools"]] == ["base_tool", "mcp_tool"]
 
 
+async def test_runtime_config_middleware_uses_last_enabled_tool_when_names_conflict(monkeypatch):
+    first_mcp_tool = SimpleNamespace(name="mcp_tool", source="alpha")
+    last_mcp_tool = SimpleNamespace(name="mcp_tool", source="beta")
+
+    async def fake_get_enabled_mcp_tools(server_name: str):
+        return {"alpha": [first_mcp_tool], "beta": [last_mcp_tool]}[server_name]
+
+    monkeypatch.setattr(runtime_module, "get_all_tool_instances", lambda: [])
+    monkeypatch.setattr(runtime_module, "get_enabled_mcp_tools", fake_get_enabled_mcp_tools)
+
+    middleware = RuntimeConfigMiddleware(
+        enable_model_override=False,
+        enable_system_prompt_override=False,
+    )
+    context = SimpleNamespace(tools=[], mcps=["alpha", "beta"])
+    request = _FakeRequest(context=context, tools=[])
+    captured = {}
+
+    async def handler(updated_request):
+        captured["tools"] = updated_request.tools
+        return SimpleNamespace()
+
+    await middleware.awrap_model_call(request, handler)
+
+    assert captured["tools"] == [last_mcp_tool]
+
+
 async def test_chatbot_graph_build_does_not_scan_all_mcp_servers(monkeypatch):
     from yuxi.agents.buildin.chatbot import graph as chatbot_graph
 

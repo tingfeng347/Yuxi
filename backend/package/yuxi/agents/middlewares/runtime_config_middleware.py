@@ -100,7 +100,7 @@ class RuntimeConfigMiddleware(AgentMiddleware):
                 if t_bind.name in enabled_tools_by_name or t_bind.name not in managed_tool_names:
                     merged_tools.append(t_bind)
                     merged_tool_names.add(t_bind.name)
-            for tool in enabled_tools:
+            for tool in enabled_tools_by_name.values():
                 if tool.name not in merged_tool_names:
                     merged_tools.append(tool)
                     merged_tool_names.add(tool.name)
