@@ -3780,7 +3780,6 @@ watch(currentChatId, (threadId, oldThreadId) => {
   align-items: center;
   gap: 6px;
   padding: 2px 0;
-  border-bottom: 1px solid var(--gray-50);
 }
 
 .todo-item:last-child {
@@ -3824,7 +3823,7 @@ watch(currentChatId, (threadId, oldThreadId) => {
 }
 
 .todo-item-text {
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.5;
   color: var(--gray-700);
   word-break: break-word;

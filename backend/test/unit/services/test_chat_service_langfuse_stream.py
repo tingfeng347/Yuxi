@@ -14,6 +14,17 @@ async def _fake_normalize_agent_context_config(context, **_kwargs):
     return dict(context or {})
 
 
+class _FakeContext:
+    def __init__(self):
+        self.thread_id = ""
+        self.uid = ""
+        self.temperature = None
+
+    def update(self, data: dict):
+        for key, value in data.items():
+            setattr(self, key, value)
+
+
 class _FakeConvRepo:
     def __init__(self, _db):
         self.saved_messages: list[dict] = []
@@ -85,7 +96,7 @@ async def test_stream_agent_chat_passes_langfuse_callbacks_and_persists_trace_in
     calls: dict[str, object] = {}
 
     class FakeAgent:
-        context_schema = None
+        context_schema = _FakeContext
 
         async def stream_messages_with_state(self, messages, input_context=None, **kwargs):
             calls["stream_messages"] = messages
@@ -93,7 +104,7 @@ async def test_stream_agent_chat_passes_langfuse_callbacks_and_persists_trace_in
             calls["stream_kwargs"] = kwargs
             yield "messages", (AIMessageChunk(content="hello"), {"node": "llm"})
 
-        async def get_graph(self):
+        async def get_graph(self, *, context=None):
             class FakeGraph:
                 async def aget_state(self, config):
                     return SimpleNamespace(values={"messages": [], "files": {}, "artifacts": []})
@@ -104,11 +115,12 @@ async def test_stream_agent_chat_passes_langfuse_callbacks_and_persists_trace_in
         return SimpleNamespace(slug="test-agent", backend_id="ChatbotAgent"), FakeAgent(), {"temperature": 0.1}
 
     async def fake_save_messages_from_langgraph_state(
-        *, agent_instance, thread_id, conv_repo, config_dict, trace_info, run_id=None, request_id=None
+        *, agent_instance, thread_id, conv_repo, config_dict, context, trace_info, run_id=None, request_id=None
     ):
         calls["saved_state"] = {
             "thread_id": thread_id,
             "config_dict": config_dict,
+            "context": context,
             "trace_info": trace_info,
             "run_id": run_id,
             "request_id": request_id,
@@ -120,7 +132,7 @@ async def test_stream_agent_chat_passes_langfuse_callbacks_and_persists_trace_in
     async def fake_guard_check_with_keywords(_content):
         return False
 
-    async def fake_interrupts(agent, langgraph_config, make_chunk, meta, thread_id):
+    async def fake_interrupts(agent, langgraph_config, make_chunk, meta, thread_id, context):
         if False:
             yield None
         return
@@ -179,6 +191,9 @@ async def test_stream_agent_chat_passes_langfuse_callbacks_and_persists_trace_in
         "langfuse_trace_id": "trace-runtime",
         "langfuse_session_id": "thread-1",
     }
+    assert calls["saved_state"]["context"].thread_id == "thread-1"
+    assert calls["saved_state"]["context"].uid == "user-1"
+    assert calls["saved_state"]["context"].temperature == 0.1
     assert chunks[-1]["status"] == "finished"
     assert calls["flushed"] is True
     assert isinstance(calls["stream_messages"][0], HumanMessage)
@@ -191,7 +206,7 @@ async def test_stream_agent_chat_maps_raw_protocol_events_to_yuxi_stream_events(
             return SimpleNamespace(values={"messages": [], "files": {}, "artifacts": []})
 
     class FakeAgent:
-        context_schema = None
+        context_schema = _FakeContext
 
         async def stream_messages_with_state(self, messages, input_context=None, **kwargs):
             del messages, input_context, kwargs
@@ -246,16 +261,16 @@ async def test_stream_agent_chat_maps_raw_protocol_events_to_yuxi_stream_events(
         async def stream_messages(self, messages, input_context=None, **kwargs):
             raise AssertionError("stream_messages fallback should not be used")
 
-        async def get_graph(self):
+        async def get_graph(self, *, context=None):
             return FakeGraph()
 
     async def fake_resolve_agent_runtime(**_kwargs):
         return SimpleNamespace(slug="test-agent", backend_id="ChatbotAgent"), FakeAgent(), {}
 
     async def fake_save_messages_from_langgraph_state(
-        *, agent_instance, thread_id, conv_repo, config_dict, trace_info, run_id=None, request_id=None
+        *, agent_instance, thread_id, conv_repo, config_dict, context, trace_info, run_id=None, request_id=None
     ):
-        del agent_instance, thread_id, conv_repo, config_dict, trace_info, run_id, request_id
+        del agent_instance, thread_id, conv_repo, config_dict, context, trace_info, run_id, request_id
         return None
 
     async def fake_guard_check(_content):
@@ -264,7 +279,7 @@ async def test_stream_agent_chat_maps_raw_protocol_events_to_yuxi_stream_events(
     async def fake_guard_check_with_keywords(_content):
         return False
 
-    async def fake_interrupts(agent, langgraph_config, make_chunk, meta, thread_id):
+    async def fake_interrupts(agent, langgraph_config, make_chunk, meta, thread_id, context):
         if False:
             yield None
         return
@@ -326,7 +341,7 @@ async def test_stream_agent_chat_emits_realtime_agent_state_from_values(monkeypa
             return SimpleNamespace(values={"todos": [{"content": "done", "status": "completed"}]})
 
     class FakeAgent:
-        context_schema = None
+        context_schema = _FakeContext
 
         async def stream_messages_with_state(self, messages, input_context=None, **kwargs):
             yield "values", {"messages": [], "todos": [{"content": "step 1", "status": "pending"}]}
@@ -337,16 +352,16 @@ async def test_stream_agent_chat_emits_realtime_agent_state_from_values(monkeypa
         async def stream_messages(self, messages, input_context=None, **kwargs):
             raise AssertionError("stream_messages fallback should not be used")
 
-        async def get_graph(self):
+        async def get_graph(self, *, context=None):
             return FakeGraph()
 
     async def fake_resolve_agent_runtime(**_kwargs):
         return SimpleNamespace(slug="test-agent", backend_id="ChatbotAgent"), FakeAgent(), {}
 
     async def fake_save_messages_from_langgraph_state(
-        *, agent_instance, thread_id, conv_repo, config_dict, trace_info, run_id=None, request_id=None
+        *, agent_instance, thread_id, conv_repo, config_dict, context, trace_info, run_id=None, request_id=None
     ):
-        del agent_instance, thread_id, conv_repo, config_dict, trace_info, run_id, request_id
+        del agent_instance, thread_id, conv_repo, config_dict, context, trace_info, run_id, request_id
         return None
 
     async def fake_guard_check(_content):
@@ -355,7 +370,7 @@ async def test_stream_agent_chat_emits_realtime_agent_state_from_values(monkeypa
     async def fake_guard_check_with_keywords(_content):
         return False
 
-    async def fake_interrupts(agent, langgraph_config, make_chunk, meta, thread_id):
+    async def fake_interrupts(agent, langgraph_config, make_chunk, meta, thread_id, context):
         if False:
             yield None
         return

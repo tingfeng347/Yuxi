@@ -69,8 +69,14 @@ def _build_state_files(attachments: list[dict]) -> dict:
     return files
 
 
-async def _get_langgraph_messages(agent_instance, config_dict):
-    graph = await agent_instance.get_graph()
+def _build_agent_context(agent, input_context: dict):
+    context = agent.context_schema()
+    context.update(input_context)
+    return context
+
+
+async def _get_langgraph_messages(agent_instance, config_dict, *, context):
+    graph = await agent_instance.get_graph(context=context)
     state = await graph.aget_state(config_dict)
 
     if not state or not state.values:
@@ -482,11 +488,12 @@ async def save_messages_from_langgraph_state(
     thread_id: str,
     conv_repo: ConversationRepository,
     config_dict: dict,
+    context,
     trace_info: dict[str, Any] | None = None,
     run_id: str | None = None,
     request_id: str | None = None,
 ) -> None:
-    messages = await _get_langgraph_messages(agent_instance, config_dict)
+    messages = await _get_langgraph_messages(agent_instance, config_dict, context=context)
     if messages is None:
         return
 
@@ -665,9 +672,10 @@ async def check_and_handle_interrupts(
     make_chunk,
     meta: dict,
     thread_id: str,
+    context,
 ) -> AsyncIterator[bytes]:
     try:
-        graph = await agent.get_graph()
+        graph = await agent.get_graph(context=context)
         state = await graph.aget_state(langgraph_config)
 
         if not state or not state.values:
@@ -815,6 +823,7 @@ async def stream_agent_chat(
     )
     _apply_model_override(input_context, meta)
     _apply_subagent_runtime_context(input_context, meta)
+    context = _build_agent_context(agent, input_context)
     langfuse_run = _build_langfuse_run_context(
         current_user=current_user,
         thread_id=thread_id,
@@ -972,13 +981,13 @@ async def stream_agent_chat(
             return
 
         interrupted = False
-        async for chunk in check_and_handle_interrupts(agent, langgraph_config, make_chunk, meta, thread_id):
+        async for chunk in check_and_handle_interrupts(agent, langgraph_config, make_chunk, meta, thread_id, context):
             interrupted = True
             yield chunk
 
         meta["time_cost"] = asyncio.get_event_loop().time() - start_time
         try:
-            graph = await agent.get_graph()
+            graph = await agent.get_graph(context=context)
             state = await graph.aget_state(langgraph_config)
             agent_state = extract_agent_state(getattr(state, "values", {})) if state else {}
         except Exception:
@@ -996,6 +1005,7 @@ async def stream_agent_chat(
                 thread_id=thread_id,
                 conv_repo=conv_repo,
                 config_dict=langgraph_config,
+                context=context,
                 trace_info=trace_info,
                 run_id=meta.get("run_id"),
                 request_id=meta.get("request_id"),
@@ -1111,8 +1121,7 @@ async def stream_agent_resume(
         request_id=meta.get("request_id"),
     )
     _apply_model_override(input_context, meta)
-    context = agent.context_schema()
-    context.update(input_context)
+    context = _build_agent_context(agent, input_context)
     langfuse_run = _build_langfuse_run_context(
         current_user=current_user,
         thread_id=thread_id,
@@ -1190,7 +1199,9 @@ async def stream_agent_resume(
 
         langgraph_config = {"configurable": {"thread_id": thread_id, "uid": uid}}
         interrupted = False
-        async for chunk in check_and_handle_interrupts(agent, langgraph_config, make_resume_chunk, meta, thread_id):
+        async for chunk in check_and_handle_interrupts(
+            agent, langgraph_config, make_resume_chunk, meta, thread_id, context
+        ):
             interrupted = True
             yield chunk
 
@@ -1215,6 +1226,7 @@ async def stream_agent_resume(
                 thread_id=thread_id,
                 conv_repo=conv_repo,
                 config_dict=langgraph_config,
+                context=context,
                 trace_info=trace_info,
                 run_id=meta.get("run_id"),
                 request_id=meta.get("request_id"),
@@ -1280,8 +1292,8 @@ def _serialize_state_messages(values: dict[str, Any]) -> list[dict[str, Any]]:
     return serialized
 
 
-async def _read_checkpoint_state(agent, *, uid: str, thread_id: str):
-    graph = await agent.get_graph()
+async def _read_checkpoint_state(agent, *, uid: str, thread_id: str, context):
+    graph = await agent.get_graph(context=context)
     langgraph_config = {"configurable": {"uid": uid, "thread_id": thread_id}}
     return await graph.aget_state(langgraph_config)
 
@@ -1289,14 +1301,16 @@ async def _read_checkpoint_state(agent, *, uid: str, thread_id: str):
 async def get_agent_state_view(
     *,
     thread_id: str,
-    current_uid: str,
+    current_user: User,
     db,
     include_messages: bool = False,
 ) -> dict:
     from fastapi import HTTPException
 
+    current_uid = str(current_user.uid)
     conv_repo = ConversationRepository(db)
     agent_repo = AgentRepository(db)
+    run_repo = AgentRunRepository(db)
     conversation = await conv_repo.get_conversation_by_thread_id(thread_id)
     if conversation:
         if conversation.uid != str(current_uid) or conversation.status == "deleted":
@@ -1308,7 +1322,24 @@ async def get_agent_state_view(
         agent = agent_manager.get_agent(agent_item.backend_id)
         if not agent:
             raise HTTPException(status_code=404, detail="智能体后端不存在")
-        state = await _read_checkpoint_state(agent, uid=str(current_uid), thread_id=thread_id)
+        agent_config = await normalize_agent_context_config(
+            (agent_item.config_json or {}).get("context", {}),
+            db=db,
+            user=current_user,
+            context_schema=agent.context_schema,
+        )
+        input_context = await build_agent_input_context(
+            agent_config,
+            thread_id=thread_id,
+            uid=current_uid,
+        )
+        latest_run = await run_repo.get_latest_run_by_thread_for_user(thread_id, current_uid)
+        if latest_run and isinstance(latest_run.input_payload, dict):
+            model_spec = latest_run.input_payload.get("model_spec")
+            if isinstance(model_spec, str) and model_spec.strip():
+                input_context["model"] = model_spec.strip()
+        context = _build_agent_context(agent, input_context)
+        state = await _read_checkpoint_state(agent, uid=current_uid, thread_id=thread_id, context=context)
         values = getattr(state, "values", {}) if state else {}
         response = {"agent_state": extract_agent_state(values)}
         relation = await SubagentThreadRepository(db).get_by_child_conversation_for_user(
@@ -1325,7 +1356,7 @@ async def get_agent_state_view(
                 raise HTTPException(status_code=404, detail="父对话线程不存在")
             response["parent_thread_id"] = parent_conversation.thread_id
             response["subagent_thread"] = relation.to_dict()
-            latest_run = await AgentRunRepository(db).get_latest_subagent_run_by_thread_for_user(
+            latest_run = await run_repo.get_latest_subagent_run_by_thread_for_user(
                 thread_id,
                 str(current_uid),
             )

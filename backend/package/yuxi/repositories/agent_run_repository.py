@@ -77,6 +77,20 @@ class AgentRunRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_latest_run_by_thread_for_user(self, conversation_thread_id: str, uid: str) -> AgentRun | None:
+        """读取线程最近一次 run，用于恢复查询 checkpoint 时的运行时模型。"""
+        result = await self.db.execute(
+            select(AgentRun)
+            .where(
+                AgentRun.conversation_thread_id == conversation_thread_id,
+                AgentRun.uid == str(uid),
+                AgentRun.run_type.in_(["chat", "resume", "subagent"]),
+            )
+            .order_by(AgentRun.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def list_child_runs_for_user(self, created_by_run_id: str, uid: str) -> list[AgentRun]:
         """列出由指定 run 创建的所有子 run。"""
         result = await self.db.execute(

@@ -189,16 +189,19 @@ async def test_save_messages_from_langgraph_state_handles_dict_tool_call_blocks(
             )
 
     class FakeAgent:
-        async def get_graph(self):
+        async def get_graph(self, *, context):
+            assert context is fake_context
             return FakeGraph()
 
     conv_repo = _FakeConvRepo(None)
+    fake_context = object()
 
     await svc.save_messages_from_langgraph_state(
         agent_instance=FakeAgent(),
         thread_id="thread-1",
         conv_repo=conv_repo,
         config_dict={"configurable": {"thread_id": "thread-1", "uid": "user-1"}},
+        context=fake_context,
         trace_info=None,
     )
 
@@ -229,11 +232,13 @@ async def test_save_messages_from_langgraph_state_backfills_run_output_message(m
             return SimpleNamespace(values={"messages": [HumanMessage(content="question"), AIMessage(content="answer")]})
 
     class FakeAgent:
-        async def get_graph(self):
+        async def get_graph(self, *, context):
+            assert context is fake_context
             return FakeGraph()
 
     fake_db = FakeDB()
     conv_repo = _FakeConvRepo(fake_db)
+    fake_context = object()
     captured: dict[str, object] = {}
 
     class FakeRunRepo:
@@ -251,6 +256,7 @@ async def test_save_messages_from_langgraph_state_backfills_run_output_message(m
         thread_id="thread-1",
         conv_repo=conv_repo,
         config_dict={"configurable": {"thread_id": "thread-1", "uid": "user-1"}},
+        context=fake_context,
         trace_info={"langfuse_trace_id": "trace-1"},
         run_id="run-1",
         request_id="req-1",
@@ -324,7 +330,7 @@ async def test_get_agent_state_view_rejects_async_subagent_without_child_convers
     with pytest.raises(HTTPException) as exc:
         await svc.get_agent_state_view(
             thread_id=child_thread_id,
-            current_uid="user-1",
+            current_user=SimpleNamespace(uid="user-1"),
             db=object(),
             include_messages=True,
         )
@@ -355,7 +361,10 @@ async def test_get_agent_state_view_includes_subagent_thread_relation(monkeypatc
 
         async def get_by_slug(self, slug: str):
             assert slug == "worker"
-            return SimpleNamespace(backend_id="SubAgentBackend")
+            return SimpleNamespace(
+                backend_id="SubAgentBackend",
+                config_json={"context": {}},
+            )
 
     class ThreadRepo:
         def __init__(self, _db):
@@ -382,6 +391,11 @@ async def test_get_agent_state_view_includes_subagent_thread_relation(monkeypatc
     class RunRepo:
         def __init__(self, _db):
             pass
+
+        async def get_latest_run_by_thread_for_user(self, thread_id: str, uid: str):
+            assert thread_id == child_thread_id
+            assert uid == "user-1"
+            return SimpleNamespace(input_payload={"model_spec": "provider:run-model"})
 
         async def get_latest_subagent_run_by_thread_for_user(self, thread_id: str, uid: str):
             assert thread_id == child_thread_id
@@ -417,19 +431,35 @@ async def test_get_agent_state_view_includes_subagent_thread_relation(monkeypatc
                 }
             )
 
+    class Context:
+        def __init__(self, *, thread_id="", uid=""):
+            self.thread_id = thread_id
+            self.uid = uid
+            self.model = ""
+
+        def update(self, data: dict):
+            for key, value in data.items():
+                setattr(self, key, value)
+
     class Agent:
-        async def get_graph(self):
+        context_schema = Context
+
+        async def get_graph(self, *, context):
+            assert context.thread_id == child_thread_id
+            assert context.uid == "user-1"
+            assert context.model == "provider:run-model"
             return Graph()
 
     monkeypatch.setattr(svc, "ConversationRepository", ConvRepo)
     monkeypatch.setattr(svc, "AgentRepository", AgentRepo)
     monkeypatch.setattr(svc, "SubagentThreadRepository", ThreadRepo)
     monkeypatch.setattr(svc, "AgentRunRepository", RunRepo)
+    monkeypatch.setattr(svc, "normalize_agent_context_config", _fake_normalize_agent_context_config)
     monkeypatch.setattr(svc.agent_manager, "get_agent", lambda backend_id: Agent())
 
     result = await svc.get_agent_state_view(
         thread_id=child_thread_id,
-        current_uid="user-1",
+        current_user=SimpleNamespace(uid="user-1"),
         db=object(),
         include_messages=True,
     )
@@ -465,7 +495,7 @@ async def test_get_agent_state_view_reports_malformed_subagent_run_as_server_err
 
         async def get_by_slug(self, slug: str):
             assert slug == "worker"
-            return SimpleNamespace(backend_id="SubAgentBackend")
+            return SimpleNamespace(backend_id="SubAgentBackend", config_json={"context": {}})
 
     class ThreadRepo:
         def __init__(self, _db):
@@ -484,6 +514,11 @@ async def test_get_agent_state_view_reports_malformed_subagent_run_as_server_err
         def __init__(self, _db):
             pass
 
+        async def get_latest_run_by_thread_for_user(self, thread_id: str, uid: str):
+            assert thread_id == child_thread_id
+            assert uid == "user-1"
+            return None
+
         async def get_latest_subagent_run_by_thread_for_user(self, thread_id: str, uid: str):
             assert thread_id == child_thread_id
             assert uid == "user-1"
@@ -499,20 +534,34 @@ async def test_get_agent_state_view_reports_malformed_subagent_run_as_server_err
         async def aget_state(self, _config):
             return SimpleNamespace(values={})
 
+    class Context:
+        def __init__(self, *, thread_id="", uid=""):
+            self.thread_id = thread_id
+            self.uid = uid
+
+        def update(self, data: dict):
+            for key, value in data.items():
+                setattr(self, key, value)
+
     class Agent:
-        async def get_graph(self):
+        context_schema = Context
+
+        async def get_graph(self, *, context):
+            assert context.thread_id == child_thread_id
+            assert context.uid == "user-1"
             return Graph()
 
     monkeypatch.setattr(svc, "ConversationRepository", ConvRepo)
     monkeypatch.setattr(svc, "AgentRepository", AgentRepo)
     monkeypatch.setattr(svc, "SubagentThreadRepository", ThreadRepo)
     monkeypatch.setattr(svc, "AgentRunRepository", RunRepo)
+    monkeypatch.setattr(svc, "normalize_agent_context_config", _fake_normalize_agent_context_config)
     monkeypatch.setattr(svc.agent_manager, "get_agent", lambda _backend_id: Agent())
 
     with pytest.raises(HTTPException) as exc:
         await svc.get_agent_state_view(
             thread_id=child_thread_id,
-            current_uid="user-1",
+            current_user=SimpleNamespace(uid="user-1"),
             db=object(),
         )
 

@@ -102,7 +102,7 @@ async def get_thread_state(
     try:
         return await get_agent_state_view(
             thread_id=thread_id,
-            current_uid=str(current_user.uid),
+            current_user=current_user,
             db=db,
             include_messages=include_messages,
         )
