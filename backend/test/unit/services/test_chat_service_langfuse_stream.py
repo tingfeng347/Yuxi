@@ -7,6 +7,7 @@ import pytest
 from langchain.messages import AIMessageChunk, HumanMessage
 
 from yuxi.services import chat_service as svc
+from yuxi.services.input_message_service import build_chat_input_message
 
 
 async def _fake_normalize_agent_context_config(context, **_kwargs):
@@ -86,11 +87,11 @@ async def test_stream_agent_chat_passes_langfuse_callbacks_and_persists_trace_in
     class FakeAgent:
         context_schema = None
 
-        async def stream_messages(self, messages, input_context=None, **kwargs):
+        async def stream_messages_with_state(self, messages, input_context=None, **kwargs):
             calls["stream_messages"] = messages
             calls["stream_input_context"] = input_context
             calls["stream_kwargs"] = kwargs
-            yield AIMessageChunk(content="hello"), {"node": "llm"}
+            yield "messages", (AIMessageChunk(content="hello"), {"node": "llm"})
 
         async def get_graph(self):
             class FakeGraph:
@@ -153,11 +154,10 @@ async def test_stream_agent_chat_passes_langfuse_callbacks_and_persists_trace_in
 
     chunks = []
     async for chunk in svc.stream_agent_chat(
-        query="hello",
-        agent_id="test-agent",
+        agent_slug="test-agent",
         thread_id="thread-1",
         meta={"request_id": "req-1"},
-        image_content=None,
+        input_message=build_chat_input_message("hello"),
         current_user=SimpleNamespace(id=1, uid="user-1", role="user", department_id="dept-1"),
         db=object(),
     ):
@@ -235,7 +235,7 @@ async def test_stream_agent_chat_maps_raw_protocol_events_to_yuxi_stream_events(
                             "type": "tool_call",
                             "id": "call-1",
                             "name": "task",
-                            "args": {"description": "do work", "subagent_type": "worker"},
+                            "args": {"description": "do work", "subagent_slug": "worker"},
                         },
                     },
                     metadata,
@@ -286,11 +286,10 @@ async def test_stream_agent_chat_maps_raw_protocol_events_to_yuxi_stream_events(
 
     chunks = []
     async for chunk in svc.stream_agent_chat(
-        query="hello",
-        agent_id="test-agent",
+        agent_slug="test-agent",
         thread_id="thread-1",
         meta={"request_id": "req-1"},
-        image_content=None,
+        input_message=build_chat_input_message("hello"),
         current_user=SimpleNamespace(id=1, uid="user-1", role="user", department_id="dept-1"),
         db=object(),
     ):
@@ -312,7 +311,7 @@ async def test_stream_agent_chat_maps_raw_protocol_events_to_yuxi_stream_events(
         "message_id": "msg-1",
         "tool_call_id": "call-1",
         "name": "task",
-        "args": {"description": "do work", "subagent_type": "worker"},
+        "args": {"description": "do work", "subagent_slug": "worker"},
         "index": 1,
         "thread_id": "thread-1",
         "namespace": [],
@@ -378,11 +377,10 @@ async def test_stream_agent_chat_emits_realtime_agent_state_from_values(monkeypa
 
     chunks = []
     async for chunk in svc.stream_agent_chat(
-        query="hello",
-        agent_id="test-agent",
+        agent_slug="test-agent",
         thread_id="thread-1",
         meta={"request_id": "req-1"},
-        image_content=None,
+        input_message=build_chat_input_message("hello"),
         current_user=SimpleNamespace(id=1, uid="user-1", role="user", department_id="dept-1"),
         db=object(),
     ):
@@ -393,3 +391,5 @@ async def test_stream_agent_chat_emits_realtime_agent_state_from_values(monkeypa
     assert agent_state_chunks[0]["agent_state"]["todos"][0]["status"] == "pending"
     assert agent_state_chunks[1]["agent_state"]["todos"][0]["status"] == "in_progress"
     assert agent_state_chunks[2]["agent_state"]["todos"][0]["status"] == "completed"
+    assert all("agent_slug" in chunk.get("meta", {}) for chunk in chunks if isinstance(chunk.get("meta"), dict))
+    assert all("agent_id" not in chunk.get("meta", {}) for chunk in chunks if isinstance(chunk.get("meta"), dict))

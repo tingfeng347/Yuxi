@@ -3,9 +3,9 @@ import json
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
-from langchain.messages import AIMessage, AIMessageChunk, HumanMessage
+from langchain.messages import AIMessage, AIMessageChunk
 from langgraph.types import Command
 from yuxi import config as conf
 from yuxi.agents.buildin import agent_manager
@@ -14,7 +14,10 @@ from yuxi.agents.state import AgentStatePayload
 from yuxi.repositories.agent_repository import AgentRepository
 from yuxi.repositories.agent_run_repository import AgentRunRepository
 from yuxi.repositories.conversation_repository import ConversationRepository
+from yuxi.repositories.subagent_thread_repository import SubagentThreadRepository
 from yuxi.services.conversation_service import serialize_attachment
+from yuxi.services.input_message_service import AgentRunInputMessage
+from yuxi.services.subagent_run_service import serialize_subagent_run_state
 from yuxi.services.langfuse_service import (
     LangfuseRunContext,
     build_run_context,
@@ -28,6 +31,7 @@ from yuxi.utils.logging_config import logger
 from yuxi.utils.question_utils import (
     normalize_questions as _normalize_interrupt_questions,
 )
+from yuxi.utils.thread_utils import extract_thread_id as _metadata_thread_id
 
 
 def _build_state_files(attachments: list[dict]) -> dict:
@@ -155,23 +159,6 @@ def _agent_state_signature(agent_state: AgentStatePayload | dict | None) -> str:
         return str(agent_state)
 
 
-def _metadata_thread_id(metadata: dict | None, fallback: str | None = None) -> str | None:
-    if not isinstance(metadata, dict):
-        return fallback
-
-    for source in (
-        metadata,
-        metadata.get("configurable"),
-        metadata.get("metadata"),
-        metadata.get("stream_event"),
-    ):
-        if isinstance(source, dict):
-            value = source.get("thread_id")
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-    return fallback
-
-
 def _metadata_namespace(metadata: dict | None) -> list[str]:
     if not isinstance(metadata, dict):
         return []
@@ -199,6 +186,23 @@ def _apply_model_override(input_context: dict, meta: dict | None) -> None:
     model_spec = model_spec.strip() if isinstance(model_spec, str) else model_spec
     if model_spec:
         input_context["model"] = model_spec
+
+
+def _apply_subagent_runtime_context(input_context: dict, meta: dict | None) -> None:
+    """把子智能体 run 的父线程和文件线程信息注入运行 context。"""
+    meta = meta or {}
+    # 仅对子智能体类型的 run 生效
+    if meta.get("run_type") != "subagent":
+        return
+    # 这三个线程 ID 由 subagent_run_service 在创建 run 时写入 runtime，
+    # 是子智能体区别于普通对话的唯一依据；缺失即上游契约被破坏，直接失败而非静默回退。
+    for key in ("parent_thread_id", "file_thread_id", "skills_thread_id"):
+        value = str(meta.get(key) or "").strip()
+        if not value:
+            raise ValueError(f"子智能体运行缺少必需的 {key}")
+        input_context[key] = value
+    # 标记为子智能体运行，供下游逻辑判断
+    input_context["is_subagent_runtime"] = True
 
 
 def _stream_message_key(metadata: dict | None, namespace: list[str], thread_id: str | None) -> tuple[str, str]:
@@ -347,17 +351,12 @@ def _message_payload_yuxi_events(
 
 
 async def _stream_agent_events(agent, messages, *, input_context=None, **kwargs):
-    if hasattr(agent, "stream_messages_with_state"):
-        async for mode, payload in agent.stream_messages_with_state(
-            messages,
-            input_context=input_context,
-            **kwargs,
-        ):
-            yield mode, payload
-        return
-
-    async for msg, metadata in agent.stream_messages(messages, input_context=input_context, **kwargs):
-        yield "messages", (msg, metadata)
+    async for mode, payload in agent.stream_messages_with_state(
+        messages,
+        input_context=input_context,
+        **kwargs,
+    ):
+        yield mode, payload
 
 
 async def _get_existing_message_ids(conv_repo: ConversationRepository, thread_id: str) -> set[str]:
@@ -621,26 +620,29 @@ async def _resolve_agent_runtime(
     *,
     db,
     user: User,
-    requested_agent_id: str | None,
+    requested_agent_slug: str | None,
     thread_id: str | None,
+    agent_kind: Literal["main", "subagent"] = "main",
 ) -> tuple[Agent, Any, dict]:
+    """解析智能体运行时，返回 (Agent, backend, agent_config)"""
     agent_repo = AgentRepository(db)
     conv_repo = ConversationRepository(db)
-    bound_agent_id = requested_agent_id
+    resolved_agent_slug = requested_agent_slug
 
     if thread_id:
         conversation = await conv_repo.get_conversation_by_thread_id(thread_id)
         if conversation:
             if conversation.uid != str(user.uid) or conversation.status == "deleted":
                 raise ValueError("对话线程不存在")
-            if requested_agent_id and requested_agent_id != conversation.agent_id:
+            # Conversation.agent_id 是历史字段名，实际保存的是 Agent.slug。
+            if requested_agent_slug and requested_agent_slug != conversation.agent_id:
                 raise ValueError("已有线程已绑定智能体，不能切换")
-            bound_agent_id = conversation.agent_id
+            resolved_agent_slug = conversation.agent_id
 
-    if not bound_agent_id:
-        raise ValueError("缺少必需的 agent_id 字段")
+    if not resolved_agent_slug:
+        raise ValueError("缺少必需的 agent_slug 字段")
 
-    agent_item = await agent_repo.get_visible_by_slug(slug=bound_agent_id, user=user)
+    agent_item = await agent_repo.get_visible_by_slug(slug=resolved_agent_slug, user=user, kind=agent_kind)
     if not agent_item:
         raise ValueError("智能体不存在或无权限访问")
 
@@ -737,221 +739,12 @@ async def _bind_request_attachments(
     return [serialize_attachment(attachment) for attachment in attachments]
 
 
-async def agent_chat(
-    *,
-    query: str,
-    agent_id: str,
-    thread_id: str | None,
-    meta: dict,
-    image_content: str | None,
-    current_user,
-    db,
-) -> dict:
-    """非流式对话，返回完整响应"""
-    start_time = asyncio.get_event_loop().time()
-
-    if image_content:
-        human_message = HumanMessage(
-            content=[
-                {"type": "text", "text": query},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_content}"}},
-            ]
-        )
-        message_type = "multimodal_image"
-    else:
-        human_message = HumanMessage(content=query)
-        message_type = "text"
-
-    if conf.enable_content_guard and await content_guard.check(query):
-        return {
-            "status": "error",
-            "error_type": "content_guard_blocked",
-            "error_message": "输入内容包含敏感词",
-            "request_id": meta.get("request_id"),
-        }
-
-    uid = str(current_user.uid)
-    meta = dict(meta or {})
-    if "request_id" not in meta or not meta.get("request_id"):
-        logger.warning("请求缺少 request_id，已自动生成一个新的 request_id")
-        meta["request_id"] = str(uuid.uuid4())
-
-    if not thread_id:
-        thread_id = str(uuid.uuid4())
-        logger.warning(f"No thread_id provided, generated new thread_id: {thread_id}")
-
-    try:
-        agent_item, agent, agent_config = await _resolve_agent_runtime(
-            db=db,
-            user=current_user,
-            requested_agent_id=agent_id,
-            thread_id=thread_id,
-        )
-    except ValueError as e:
-        return {
-            "status": "error",
-            "error_type": "invalid_agent",
-            "error_message": str(e),
-            "request_id": meta.get("request_id"),
-        }
-
-    meta.update(
-        {
-            "query": query,
-            "agent_id": agent_item.slug,
-            "backend_id": agent_item.backend_id,
-            "server_model_name": agent_item.backend_id,
-            "thread_id": thread_id,
-            "uid": current_user.uid,
-            "has_image": bool(image_content),
-        }
-    )
-
-    messages = [human_message]
-    input_context = await build_agent_input_context(
-        agent_config,
-        thread_id=thread_id,
-        uid=uid,
-        run_id=meta.get("run_id"),
-        request_id=meta.get("request_id"),
-    )
-    _apply_model_override(input_context, meta)
-    langfuse_run = _build_langfuse_run_context(
-        current_user=current_user,
-        thread_id=thread_id,
-        agent_id=agent_item.slug,
-        backend_id=agent_item.backend_id,
-        request_id=meta["request_id"],
-        operation="agent_chat_sync",
-        message_type=message_type,
-        meta=meta,
-    )
-    trace_info: dict[str, Any] = {}
-
-    try:
-        conv_repo = ConversationRepository(db)
-        await _ensure_thread_bound_agent(
-            conv_repo=conv_repo,
-            thread_id=thread_id,
-            uid=uid,
-            agent_item=agent_item,
-        )
-
-        request_attachments = await _bind_request_attachments(
-            conv_repo=conv_repo,
-            thread_id=thread_id,
-            request_id=meta["request_id"],
-            attachment_file_ids=_normalize_attachment_file_ids(meta),
-        )
-
-        try:
-            await conv_repo.add_message_by_thread_id(
-                thread_id=thread_id,
-                role="user",
-                content=query,
-                message_type=message_type,
-                image_content=image_content,
-                extra_metadata={
-                    "raw_message": human_message.model_dump(),
-                    "request_id": meta.get("request_id"),
-                    "attachments": request_attachments,
-                },
-            )
-        except Exception as e:
-            logger.error(f"Error saving user message: {e}")
-
-        langgraph_config = {"configurable": {"thread_id": thread_id, "uid": uid}}
-        invoke_result = await agent.invoke_messages(
-            messages,
-            input_context=input_context,
-            callbacks=langfuse_run.callbacks,
-            metadata=langfuse_run.metadata,
-            tags=langfuse_run.tags,
-        )
-        full_msg = _extract_ai_message(invoke_result.get("messages") if isinstance(invoke_result, dict) else None)
-        trace_info = get_trace_info(langfuse_run)
-
-        if full_msg is None:
-            try:
-                graph = await agent.get_graph()
-                state = await graph.aget_state(langgraph_config)
-                full_msg = _extract_ai_message(getattr(state, "values", {}).get("messages", [])) if state else None
-            except Exception:
-                full_msg = None
-
-        full_content = full_msg.content if full_msg else ""
-
-        if conf.enable_content_guard and await content_guard.check(full_content):
-            await save_partial_message(
-                conv_repo,
-                thread_id,
-                full_msg,
-                "content_guard_blocked",
-                trace_info=trace_info,
-                run_id=meta.get("run_id"),
-                request_id=meta.get("request_id"),
-            )
-            return {
-                "status": "interrupted",
-                "message": "检测到敏感内容，已中断输出",
-                "request_id": meta.get("request_id"),
-                "time_cost": asyncio.get_event_loop().time() - start_time,
-            }
-
-        try:
-            graph = await agent.get_graph()
-            state = await graph.aget_state(langgraph_config)
-            agent_state = extract_agent_state(getattr(state, "values", {})) if state else {}
-        except Exception:
-            agent_state = {}
-
-        try:
-            await save_messages_from_langgraph_state(
-                agent_instance=agent,
-                thread_id=thread_id,
-                conv_repo=conv_repo,
-                config_dict=langgraph_config,
-                trace_info=trace_info,
-                run_id=meta.get("run_id"),
-                request_id=meta.get("request_id"),
-            )
-        except Exception as e:
-            logger.exception(f"Error saving messages from LangGraph state: {e}")
-            return {
-                "status": "error",
-                "error_type": "save_message_error",
-                "error_message": f"消息保存失败: {e}",
-                "request_id": meta.get("request_id"),
-            }
-
-        return {
-            "status": "finished",
-            "response": full_content,
-            "request_id": meta.get("request_id"),
-            "thread_id": thread_id,
-            "agent_state": agent_state,
-            "time_cost": asyncio.get_event_loop().time() - start_time,
-        }
-
-    except Exception as e:
-        logger.exception(f"Error in agent_chat: {e}")
-        return {
-            "status": "error",
-            "error_type": "unexpected_error",
-            "error_message": str(e),
-            "request_id": meta.get("request_id"),
-        }
-    finally:
-        flush_langfuse()
-
-
 async def stream_agent_chat(
     *,
-    query: str,
-    agent_id: str,
+    agent_slug: str,
     thread_id: str | None,
     meta: dict,
-    image_content: str | None,
+    input_message: AgentRunInputMessage,
     current_user,
     db,
     save_user_message: bool = True,
@@ -978,17 +771,10 @@ async def stream_agent_chat(
         thread_id = str(uuid.uuid4())
         logger.warning(f"No thread_id provided, generated new thread_id: {thread_id}")
 
-    if image_content:
-        human_message = HumanMessage(
-            content=[
-                {"type": "text", "text": query},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_content}"}},
-            ]
-        )
-        message_type = "multimodal_image"
-    else:
-        human_message = HumanMessage(content=query)
-        message_type = "text"
+    query = input_message.content
+    image_content = input_message.image_content
+    human_message = input_message.require_langchain_message()
+    message_type = input_message.message_type
 
     if conf.enable_content_guard and await content_guard.check(query):
         yield make_chunk(
@@ -1000,8 +786,9 @@ async def stream_agent_chat(
         agent_item, agent, agent_config = await _resolve_agent_runtime(
             db=db,
             user=current_user,
-            requested_agent_id=agent_id,
+            requested_agent_slug=agent_slug,
             thread_id=thread_id,
+            agent_kind="subagent" if meta.get("run_type") == "subagent" else "main",
         )
     except ValueError as e:
         yield make_chunk(status="error", error_type="invalid_agent", error_message=str(e), meta=meta)
@@ -1010,9 +797,8 @@ async def stream_agent_chat(
     meta.update(
         {
             "query": query,
-            "agent_id": agent_item.slug,
+            "agent_slug": agent_item.slug,
             "backend_id": agent_item.backend_id,
-            "server_model_name": agent_item.backend_id,
             "thread_id": thread_id,
             "uid": current_user.uid,
             "has_image": bool(image_content),
@@ -1028,6 +814,7 @@ async def stream_agent_chat(
         request_id=meta.get("request_id"),
     )
     _apply_model_override(input_context, meta)
+    _apply_subagent_runtime_context(input_context, meta)
     langfuse_run = _build_langfuse_run_context(
         current_user=current_user,
         thread_id=thread_id,
@@ -1096,8 +883,6 @@ async def stream_agent_chat(
         # LangGraph 会自动从 checkpointer 恢复 state（包括 uploads）
         # 无需手动加载或传递
 
-        full_msg = None
-        accumulated_content = []
         protocol_message_ids: dict[tuple[str, str], str] = {}
         async for mode, payload in _stream_agent_events(
             agent,
@@ -1309,14 +1094,14 @@ async def stream_agent_resume(
         agent_item, agent, agent_config = await _resolve_agent_runtime(
             db=db,
             user=current_user,
-            requested_agent_id=None,
+            requested_agent_slug=None,
             thread_id=thread_id,
         )
     except ValueError as e:
         yield make_resume_chunk(status="error", error_type="invalid_agent", error_message=str(e), meta=meta)
         return
 
-    meta["agent_id"] = agent_item.slug
+    meta["agent_slug"] = agent_item.slug
     meta["backend_id"] = agent_item.backend_id
     input_context = await build_agent_input_context(
         agent_config or {},
@@ -1501,24 +1286,6 @@ async def _read_checkpoint_state(agent, *, uid: str, thread_id: str):
     return await graph.aget_state(langgraph_config)
 
 
-def _serialize_subagent_run(run) -> dict[str, Any]:
-    payload = run.input_payload if isinstance(run.input_payload, dict) else {}
-    return {
-        "id": payload.get("tool_call_id") or run.id,
-        "run_id": run.id,
-        "subagent_type": payload.get("subagent_type") or run.agent_id,
-        "subagent_name": payload.get("subagent_name"),
-        "child_thread_id": payload.get("child_thread_id") or run.thread_id,
-        "description": payload.get("description"),
-        "status": run.status,
-        "created_at": run.to_dict().get("created_at"),
-        "completed_at": run.to_dict().get("finished_at"),
-        "result_preview": payload.get("result_preview"),
-        "error": run.error_message,
-        "parent_agent_run_id": run.parent_agent_run_id,
-    }
-
-
 async def get_agent_state_view(
     *,
     thread_id: str,
@@ -1544,43 +1311,34 @@ async def get_agent_state_view(
         state = await _read_checkpoint_state(agent, uid=str(current_uid), thread_id=thread_id)
         values = getattr(state, "values", {}) if state else {}
         response = {"agent_state": extract_agent_state(values)}
+        relation = await SubagentThreadRepository(db).get_by_child_conversation_for_user(
+            conversation.id,
+            str(current_uid),
+        )
+        if relation:
+            parent_conversation = await conv_repo.get_conversation_by_id(relation.parent_conversation_id)
+            if (
+                not parent_conversation
+                or parent_conversation.uid != str(current_uid)
+                or parent_conversation.status == "deleted"
+            ):
+                raise HTTPException(status_code=404, detail="父对话线程不存在")
+            response["parent_thread_id"] = parent_conversation.thread_id
+            response["subagent_thread"] = relation.to_dict()
+            latest_run = await AgentRunRepository(db).get_latest_subagent_run_by_thread_for_user(
+                thread_id,
+                str(current_uid),
+            )
+            if latest_run:
+                try:
+                    response["subagent_run"] = serialize_subagent_run_state(latest_run)
+                except ValueError as exc:
+                    logger.error(f"子智能体运行记录格式异常: thread_id={thread_id}, run_id={latest_run.id}, {exc}")
+                    raise HTTPException(status_code=500, detail="子智能体运行记录格式异常") from exc
         if include_messages:
             response["messages"] = _serialize_state_messages(values)
         return response
 
-    run_repo = AgentRunRepository(db)
-    subagent_run = await run_repo.get_latest_subagent_run_by_thread_for_user(thread_id, str(current_uid))
-    if not subagent_run or not subagent_run.parent_agent_run_id:
-        raise HTTPException(status_code=404, detail="对话线程不存在")
-
-    parent_run = await run_repo.get_run_for_user(subagent_run.parent_agent_run_id, str(current_uid))
-    if not parent_run:
-        raise HTTPException(status_code=404, detail="对话线程不存在")
-
-    parent_conversation = await conv_repo.get_conversation_by_thread_id(parent_run.thread_id)
-    if (
-        not parent_conversation
-        or parent_conversation.id != parent_run.conversation_id
-        or parent_conversation.uid != str(current_uid)
-        or parent_conversation.status == "deleted"
-    ):
-        raise HTTPException(status_code=404, detail="对话线程不存在")
-
-    child_agent_item = await agent_repo.get_by_slug(subagent_run.agent_id)
-    if not child_agent_item:
-        raise HTTPException(status_code=404, detail="智能体不存在")
-    child_agent = agent_manager.get_agent(child_agent_item.backend_id)
-    if not child_agent:
-        raise HTTPException(status_code=404, detail="智能体后端不存在")
-
-    checkpoint_thread_id = subagent_run.checkpoint_thread_id or subagent_run.thread_id
-    child_state = await _read_checkpoint_state(child_agent, uid=str(current_uid), thread_id=checkpoint_thread_id)
-    child_values = getattr(child_state, "values", {}) if child_state else {}
-    response = {
-        "agent_state": extract_agent_state(child_values),
-        "parent_thread_id": parent_run.thread_id,
-        "subagent_run": _serialize_subagent_run(subagent_run),
-    }
-    if include_messages:
-        response["messages"] = _serialize_state_messages(child_values)
-    return response
+    # 子智能体线程在创建时必然同时写入子对话与线程关系（见 SubagentRunService.start），
+    # 由上面的 conversation 分支统一处理；走到这里说明该 thread 没有对应对话，即线程不存在。
+    raise HTTPException(status_code=404, detail="对话线程不存在")

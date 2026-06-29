@@ -26,16 +26,115 @@ def test_merge_artifacts_deduplicates_and_preserves_order():
     ]
 
 
-def test_merge_subagent_runs_updates_existing_run_by_id():
+def test_merge_subagent_runs_does_not_merge_entries_without_run_id():
     assert merge_subagent_runs(
-        [{"id": "run-1", "status": "completed", "result_preview": "old"}],
+        [{"id": "run-1", "status": "completed"}],
         [
             {"id": "run-1", "status": "failed", "error": "boom"},
             {"id": "run-2", "status": "completed"},
         ],
     ) == [
-        {"id": "run-1", "status": "failed", "result_preview": "old", "error": "boom"},
+        {"id": "run-1", "status": "completed"},
+        {"id": "run-1", "status": "failed", "error": "boom"},
         {"id": "run-2", "status": "completed"},
+    ]
+
+
+def test_merge_subagent_runs_updates_existing_run_by_run_id():
+    assert merge_subagent_runs(
+        [
+            {
+                "id": "tool-1",
+                "run_id": "agent-run-1",
+                "child_thread_id": "child-thread",
+                "status": "running",
+            }
+        ],
+        [
+            {
+                "id": "tool-1",
+                "run_id": "agent-run-1",
+                "child_thread_id": "child-thread",
+                "status": "completed",
+            }
+        ],
+    ) == [
+        {
+            "id": "tool-1",
+            "run_id": "agent-run-1",
+            "child_thread_id": "child-thread",
+            "status": "completed",
+        }
+    ]
+
+
+def test_merge_subagent_runs_keeps_continuation_run_history():
+    assert merge_subagent_runs(
+        [
+            {
+                "id": "tool-old",
+                "run_id": "agent-run-old",
+                "child_thread_id": "child-thread",
+                "status": "completed",
+                "completed_at": "2026-06-20T01:00:00Z",
+            }
+        ],
+        [
+            {
+                "id": "tool-new",
+                "run_id": "agent-run-new",
+                "child_thread_id": "child-thread",
+                "status": "pending",
+            }
+        ],
+    ) == [
+        {
+            "id": "tool-old",
+            "run_id": "agent-run-old",
+            "child_thread_id": "child-thread",
+            "status": "completed",
+            "completed_at": "2026-06-20T01:00:00Z",
+        },
+        {
+            "id": "tool-new",
+            "run_id": "agent-run-new",
+            "child_thread_id": "child-thread",
+            "status": "pending",
+        },
+    ]
+
+
+def test_merge_subagent_runs_does_not_merge_different_run_ids_by_state_id():
+    assert merge_subagent_runs(
+        [
+            {
+                "id": "tool-1",
+                "run_id": "agent-run-old",
+                "child_thread_id": "child-thread",
+                "status": "completed",
+            }
+        ],
+        [
+            {
+                "id": "tool-1",
+                "run_id": "agent-run-new",
+                "child_thread_id": "child-thread",
+                "status": "pending",
+            }
+        ],
+    ) == [
+        {
+            "id": "tool-1",
+            "run_id": "agent-run-old",
+            "child_thread_id": "child-thread",
+            "status": "completed",
+        },
+        {
+            "id": "tool-1",
+            "run_id": "agent-run-new",
+            "child_thread_id": "child-thread",
+            "status": "pending",
+        },
     ]
 
 

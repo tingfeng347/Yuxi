@@ -27,7 +27,7 @@ export const extractPendingInterrupt = (chunk, threadId) => {
     source: payload.source,
     status: chunk?.status || '',
     threadId: chunk?.thread_id || threadId,
-    parentRunId: chunk?.run_id || chunk?.parent_run_id || null
+    interruptedRunId: chunk?.run_id || null
   }
 }
 
@@ -37,7 +37,7 @@ export function useApproval({ getThreadState, fetchThreadMessages }) {
     questions: [],
     status: '',
     threadId: null,
-    parentRunId: null
+    interruptedRunId: null
   })
 
   const applyInterruptToApprovalState = (pendingInterrupt, fallbackThreadId) => {
@@ -45,7 +45,7 @@ export function useApproval({ getThreadState, fetchThreadMessages }) {
     approvalState.questions = pendingInterrupt.questions
     approvalState.status = pendingInterrupt.status || ''
     approvalState.threadId = pendingInterrupt.threadId || fallbackThreadId
-    approvalState.parentRunId = pendingInterrupt.parentRunId || null
+    approvalState.interruptedRunId = pendingInterrupt.interruptedRunId || null
   }
 
   const clearApprovalState = () => {
@@ -53,7 +53,7 @@ export function useApproval({ getThreadState, fetchThreadMessages }) {
     approvalState.questions = []
     approvalState.status = ''
     approvalState.threadId = null
-    approvalState.parentRunId = null
+    approvalState.interruptedRunId = null
   }
 
   const processApprovalInStream = (chunk, threadId, currentAgentId) => {

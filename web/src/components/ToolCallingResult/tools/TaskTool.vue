@@ -99,18 +99,10 @@ const runStatusClass = computed(() => ({
 }))
 // 映射到 BaseToolCall 的图标状态（failed → error）
 const baseStatus = computed(() => (runStatus.value === 'failed' ? 'error' : runStatus.value))
-// ongoing 期间 task 结果不流式：优先用工具结果；回退到 subagent_run.result_preview 时必须 id 精确匹配，
-// 否则 steer 历史卡片会错显 agent_state 里最新一次（被 reducer 覆盖后的）运行结果。
+// ongoing 期间 task 结果不流式：只展示工具结果，状态摘要不承载后端预览文本。
 const displayResult = computed(() => {
   const toolResult = props.toolCall.tool_call_result?.content || props.toolCall.result
   if (toolResult) return toolResult
-  if (
-    runStatus.value !== 'running' &&
-    subagentRun.value?.id &&
-    String(subagentRun.value.id) === String(props.toolCall.id)
-  ) {
-    return subagentRun.value.result_preview || ''
-  }
   return ''
 })
 const shortDescription = computed(() => {

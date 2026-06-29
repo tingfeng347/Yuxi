@@ -14,6 +14,7 @@ from yuxi.agents.skills.service import init_builtin_skills
 from yuxi.config import config as sys_config
 from yuxi.repositories.agent_run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository
 from yuxi.services.chat_service import stream_agent_chat, stream_agent_resume
+from yuxi.services.input_message_service import restore_chat_input_message
 from yuxi.services.run_queue_service import (
     append_run_stream_event,
     clear_cancel_signal,
@@ -21,13 +22,15 @@ from yuxi.services.run_queue_service import (
     wait_for_cancel_signal,
 )
 from yuxi.storage.postgres.manager import pg_manager
-from yuxi.storage.postgres.models_business import User
+from yuxi.storage.postgres.models_business import Message, User
 from yuxi.storage.redis import get_arq_redis_settings
 from yuxi.utils.logging_config import logger
+from yuxi.utils.thread_utils import extract_thread_id
 
 LOADING_FLUSH_INTERVAL_MS = 100
 LOADING_FLUSH_MAX_CHARS = 512
 RUN_CANCEL_POLL_SECONDS = 0.2
+SUPPORTED_RUN_TYPES = {"chat", "resume", "subagent"}
 
 
 class RetryableRunError(Exception):
@@ -98,7 +101,7 @@ class ChunkedEventWriter:
         return thread_id or self.thread_id
 
     async def append(self, chunk: dict, *, thread_id: str | None = None):
-        target_thread_id = self._target_thread_id(thread_id or _thread_id_from_mapping(chunk))
+        target_thread_id = self._target_thread_id(thread_id or extract_thread_id(chunk))
         buffer = self.thread_buffers.setdefault(target_thread_id, _ThreadBuffer())
         buffer.items.append(chunk)
         buffer.chars += _loading_chunk_size(chunk)
@@ -191,21 +194,6 @@ def _iter_json_chunks(chunk_bytes: bytes) -> list[dict]:
     return chunks
 
 
-def _thread_id_from_mapping(value: object) -> str | None:
-    if not isinstance(value, dict):
-        return None
-    thread_id = value.get("thread_id")
-    if isinstance(thread_id, str) and thread_id.strip():
-        return thread_id.strip()
-    for key in ("meta", "metadata", "configurable", "stream_event"):
-        nested = value.get(key)
-        if isinstance(nested, dict):
-            nested_thread_id = _thread_id_from_mapping(nested)
-            if nested_thread_id:
-                return nested_thread_id
-    return None
-
-
 def _loading_chunk_size(chunk: dict) -> int:
     response = chunk.get("response")
     total = len(response) if isinstance(response, str) else 0
@@ -226,7 +214,7 @@ def _flush_loading_chunk_immediately(chunk: dict) -> bool:
 
 
 def _chunk_thread_id(chunk: dict, fallback: str | None) -> str | None:
-    return _thread_id_from_mapping(chunk) or fallback
+    return extract_thread_id(chunk, fallback)
 
 
 def _map_chunk_to_run_event(chunk: dict) -> tuple[str, dict]:
@@ -274,6 +262,7 @@ async def _consume_stream_with_cancel(agen, run_ctx: RunContext):
 
 
 async def process_agent_run(ctx, run_id: str):
+    """执行队列中的 AgentRun，并只从 run 列和输入消息恢复运行参数。"""
     run = await _get_run(run_id)
     if not run:
         logger.warning(f"Run not found: {run_id}")
@@ -283,41 +272,79 @@ async def process_agent_run(ctx, run_id: str):
         logger.info(f"Run already terminal, skip: {run_id}, status={run.status}")
         return
 
-    payload = run.input_payload or {}
-    query = payload.get("query")
-    resume_input = payload.get("resume")
-    run_type = payload.get("run_type") or "chat"
-    config = payload.get("config") or {}
-    agent_id = payload.get("agent_id")
-    image_content = payload.get("image_content")
-    uid = payload.get("uid")
-    request_id = payload.get("request_id")
-    thread_id = config.get("thread_id") or payload.get("thread_id")
+    if not isinstance(run.input_payload, dict):
+        await mark_run_terminal(run_id, "failed", "invalid_input_payload", "run input_payload 必须是对象")
+        return
+    payload = run.input_payload
+    runtime = payload.get("runtime") or {}
+    if not isinstance(runtime, dict):
+        await mark_run_terminal(run_id, "failed", "invalid_runtime_payload", "run input_payload.runtime 必须是对象")
+        return
+
+    input_message = await _load_input_message(run.input_message_id)
+    if not input_message:
+        await mark_run_terminal(run_id, "failed", "input_message_not_found", "运行任务缺少输入消息")
+        return
+    if not isinstance(input_message.extra_metadata, dict):
+        await mark_run_terminal(run_id, "failed", "invalid_input_metadata", "输入消息 metadata 必须是对象")
+        return
+
+    run_type = run.run_type
+    agent_slug = run.agent_slug
+    uid = run.uid
+    request_id = run.request_id
+    thread_id = run.conversation_thread_id
+    input_metadata = input_message.extra_metadata
+    image_content = input_message.image_content
+
+    if run_type not in SUPPORTED_RUN_TYPES:
+        await mark_run_terminal(run_id, "failed", "invalid_run_type", f"不支持的 run_type: {run_type}")
+        return
 
     user = await _load_user(uid)
     if not user:
         await mark_run_terminal(run_id, "failed", "user_not_found", f"user {uid} not found")
         return
 
-    if not request_id:
-        request_id = run.request_id
+    resume_input = None
+    if run_type == "resume":
+        resume_input = input_metadata.get("resume")
+        if resume_input is None:
+            await mark_run_terminal(run_id, "failed", "resume_input_not_found", "resume run 缺少 resume 输入")
+            return
+    else:
+        try:
+            normalized_input_message = restore_chat_input_message(
+                content=input_message.content,
+                image_content=image_content,
+                metadata=input_metadata,
+            )
+        except ValueError as exc:
+            await mark_run_terminal(run_id, "failed", "invalid_input_message", str(exc))
+            return
 
     meta = {
         "run_id": run_id,
         "request_id": request_id,
-        "query": query,
-        "agent_id": agent_id,
-        "server_model_name": config.get("model", agent_id),
-        "thread_id": config.get("thread_id"),
+        "agent_slug": agent_slug,
+        "thread_id": thread_id,
         "uid": user.uid,
         "has_image": bool(image_content),
-        "attachment_file_ids": payload.get("attachment_file_ids") or [],
+        "attachment_file_ids": input_metadata.get("attachment_file_ids") or [],
         "model_spec": payload.get("model_spec"),
+        "run_type": run_type,
+        "created_by_run_id": run.created_by_run_id,
     }
-    if payload.get("source"):
-        meta["source"] = payload.get("source")
-    if isinstance(payload.get("evaluation"), dict):
-        meta["evaluation"] = payload.get("evaluation") or {}
+    if run_type == "subagent":
+        # 三个线程 ID 在 subagent_run_service 创建 run 时已写入 runtime，此处不再二次兜底；
+        # 缺失会在 chat_service._apply_subagent_runtime_context 处直接报错。
+        meta["parent_thread_id"] = runtime.get("parent_thread_id")
+        meta["file_thread_id"] = runtime.get("file_thread_id")
+        meta["skills_thread_id"] = runtime.get("skills_thread_id")
+    if input_metadata.get("source"):
+        meta["source"] = input_metadata.get("source")
+    if isinstance(input_metadata.get("evaluation"), dict):
+        meta["evaluation"] = input_metadata.get("evaluation") or {}
 
     await mark_run_running(run_id)
     run_ctx = RunContext(run_id=run_id)
@@ -333,11 +360,13 @@ async def process_agent_run(ctx, run_id: str):
         "metadata",
         {
             "request_id": request_id,
-            "agent_id": agent_id,
-            "backend_id": payload.get("backend_id"),
+            "agent_slug": agent_slug,
             "uid": uid,
-            "source": payload.get("source"),
-            "evaluation": payload.get("evaluation") or {},
+            "source": input_metadata.get("source"),
+            "run_type": run_type,
+            "created_by_run_id": run.created_by_run_id,
+            "subagent_slug": agent_slug if run_type == "subagent" else None,
+            "evaluation": input_metadata.get("evaluation") or {},
         },
         thread_id=thread_id,
     )
@@ -353,17 +382,18 @@ async def process_agent_run(ctx, run_id: str):
                     current_user=user,
                     db=db,
                 )
-            else:
+            elif run_type in {"chat", "subagent"}:
                 stream = stream_agent_chat(
-                    query=query,
-                    agent_id=config.get("agent_id") or agent_id,
+                    agent_slug=agent_slug,
                     thread_id=thread_id,
                     meta=meta,
-                    image_content=image_content,
+                    input_message=normalized_input_message,
                     current_user=user,
                     db=db,
                     save_user_message=False,
                 )
+            else:
+                raise RuntimeError(f"unsupported run_type after validation: {run_type}")
 
             async for chunk_bytes in _consume_stream_with_cancel(stream, run_ctx):
                 for chunk in _iter_json_chunks(chunk_bytes):
@@ -503,6 +533,15 @@ async def process_agent_run(ctx, run_id: str):
     finally:
         await run_ctx.close()
         await clear_cancel_signal(run_id)
+
+
+async def _load_input_message(message_id: int | None) -> Message | None:
+    """加载 run 绑定的输入消息；worker 从这里恢复 query、resume、图片和请求元数据。"""
+    if not message_id:
+        return None
+    async with pg_manager.get_async_session_context() as db:
+        result = await db.execute(select(Message).where(Message.id == message_id))
+        return result.scalar_one_or_none()
 
 
 async def _worker_startup(ctx):

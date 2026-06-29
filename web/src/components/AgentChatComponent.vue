@@ -464,7 +464,7 @@
                   <div class="state-list">
                     <div
                       v-for="(run, index) in displaySubagentRuns"
-                      :key="run.id || `${run.subagent_type || 'subagent'}-${index}`"
+                      :key="run.id || `${run.subagent_slug || 'subagent'}-${index}`"
                       class="state-list-item"
                       :class="{ 'is-clickable': run.child_thread_id }"
                       @click="run.child_thread_id && openSubagentThread(run)"
@@ -474,7 +474,7 @@
                         :src="getSubagentIconSrc(run)"
                         :default-src="getSubagentDefaultIconSrc(run)"
                         :name="getSubagentRunName(run)"
-                        :seed="run.subagent_type || getSubagentRunName(run)"
+                        :seed="run.subagent_slug || getSubagentRunName(run)"
                         kind="agent"
                         :size="28"
                         shape="rounded"
@@ -820,16 +820,16 @@ const getArtifactMetaLabel = (path) => {
 }
 
 const getSubagentRunName = (run) => {
-  const subagentType = run?.subagent_type ? String(run.subagent_type) : ''
+  const subagentSlug = run?.subagent_slug ? String(run.subagent_slug) : ''
   return (
-    run?.subagent_name || currentSubagentOptionBySlug.value.get(subagentType)?.name || '子智能体'
+    run?.subagent_name || currentSubagentOptionBySlug.value.get(subagentSlug)?.name || '子智能体'
   )
 }
 
 const getSubagentAgent = (run) => {
-  const subagentId = run?.subagent_type
-  if (!subagentId) return null
-  return agents.value.find((agent) => agent.id === subagentId || agent.slug === subagentId) || null
+  const subagentSlug = run?.subagent_slug
+  if (!subagentSlug) return null
+  return agents.value.find((agent) => agent.slug === subagentSlug) || null
 }
 
 const getSubagentIconSrc = (run) => {
@@ -838,7 +838,7 @@ const getSubagentIconSrc = (run) => {
 }
 
 const getSubagentDefaultIconSrc = (run) =>
-  run?.subagent_type ? generatePixelAvatar(run.subagent_type) : ''
+  run?.subagent_slug ? generatePixelAvatar(run.subagent_slug) : ''
 
 const getSubagentRunMeta = (run) => {
   const artifacts = Array.isArray(run?.artifacts) ? run.artifacts.length : 0
@@ -1196,6 +1196,7 @@ const currentSubagentRunById = computed(() => {
   const runById = new Map()
   currentSubagentRuns.value.forEach((run) => {
     if (run?.id) runById.set(String(run.id), run)
+    if (run?.run_id) runById.set(String(run.run_id), run)
   })
   return runById
 })
@@ -1390,7 +1391,7 @@ const ongoingTaskCalls = computed(() => {
         id,
         messageIndex,
         hasResult: Boolean(toolCall.tool_call_result || toolCall.result),
-        subagentType: args.subagent_type || '',
+        subagentSlug: args.subagent_slug || '',
         description: args.description || '',
         childThreadId: args.thread_id ? String(args.thread_id) : getSubagentThreadIdByToolCall(id)
       })
@@ -1419,13 +1420,13 @@ const runningSubagentRunsFromStream = computed(() => {
   return ongoingTaskCalls.value
     .filter((call) => activeIds.has(call.id))
     .map((call) => {
-      const option = call.subagentType
-        ? currentSubagentOptionBySlug.value.get(call.subagentType)
+      const option = call.subagentSlug
+        ? currentSubagentOptionBySlug.value.get(call.subagentSlug)
         : null
       return {
         id: call.id,
-        subagent_type: call.subagentType,
-        subagent_name: option?.name || call.subagentType || '子智能体',
+        subagent_slug: call.subagentSlug,
+        subagent_name: option?.name || call.subagentSlug || '子智能体',
         description: call.description,
         child_thread_id: call.childThreadId || '',
         status: 'running'
@@ -1433,31 +1434,65 @@ const runningSubagentRunsFromStream = computed(() => {
     })
 })
 
-// 与后端 merge_subagent_runs 一致：按 child_thread_id / id 合并，运行中条目覆盖同一线程的完成态，
-// 保证每个子线程恒为一行并反映当前状态（含续跑/steer）。
+// task 工具调用入参里携带的任务描述（tool_call_id -> description），覆盖历史与进行中消息。
+// 后端 subagent_runs 不再冗余存储 description，面板据此为已完成的 run 回填展示文案。
+const taskDescriptionByToolCallId = computed(() => {
+  const map = new Map()
+  const collect = (messages) => {
+    if (!Array.isArray(messages)) return
+    messages.forEach((message) => {
+      if (message?.type !== 'ai' || !Array.isArray(message.tool_calls)) return
+      message.tool_calls.forEach((toolCall) => {
+        const name = toolCall?.name || toolCall?.function?.name
+        if (name !== 'task') return
+        const id = toolCall?.id ? String(toolCall.id) : ''
+        if (!id || map.has(id)) return
+        const desc = String(parseToolCallArgs(toolCall).description || '').trim()
+        if (desc) map.set(id, desc)
+      })
+    })
+  }
+  collect(historyConversations.value)
+  collect(onGoingConvMessages.value)
+  return map
+})
+
+// 后端按 run_id 合并持久化状态；流式期的临时 task 条目还没有 run_id，仅用工具调用 id 合并占位。
 const displaySubagentRuns = computed(() => {
-  const merged = currentSubagentRuns.value.map((run) => ({ ...run }))
-  const childIndex = new Map()
-  const idIndex = new Map()
+  const descByToolCall = taskDescriptionByToolCallId.value
+  const merged = currentSubagentRuns.value.map((run) => {
+    const copy = { ...run }
+    // 持久化条目不带 description，按 tool_call_id（即 run.id）从 task 调用入参回填。
+    if (!copy.description && copy.id) {
+      const desc = descByToolCall.get(String(copy.id))
+      if (desc) copy.description = desc
+    }
+    return copy
+  })
+  const runIdIndex = new Map()
+  const transientIdIndex = new Map()
   merged.forEach((run, index) => {
-    if (run.child_thread_id) childIndex.set(String(run.child_thread_id), index)
-    if (run.id) idIndex.set(String(run.id), index)
+    if (run.run_id) runIdIndex.set(String(run.run_id), index)
+    // 持久化条目（同时带 run_id 与 id）也按工具调用 id 建索引，
+    // 否则流式占位条目找不到它，会在面板里重复成额外一行。
+    if (run.id) transientIdIndex.set(String(run.id), index)
   })
   runningSubagentRunsFromStream.value.forEach((run) => {
     let position
-    if (run.child_thread_id && childIndex.has(run.child_thread_id)) {
-      position = childIndex.get(run.child_thread_id)
-    } else if (idIndex.has(run.id)) {
-      position = idIndex.get(run.id)
+    if (run.run_id && runIdIndex.has(String(run.run_id))) {
+      position = runIdIndex.get(String(run.run_id))
+    } else if (!run.run_id && run.id && transientIdIndex.has(String(run.id))) {
+      position = transientIdIndex.get(String(run.id))
     }
     if (position === undefined) {
       position = merged.length
       merged.push(run)
-    } else {
+    } else if (!merged[position].run_id) {
+      // 已落库（有 run_id）的条目以后端为准，不被流式运行态覆盖；仅覆盖纯占位条目
       merged[position] = { ...merged[position], ...run }
     }
-    if (run.child_thread_id) childIndex.set(run.child_thread_id, position)
-    idIndex.set(run.id, position)
+    if (run.run_id) runIdIndex.set(String(run.run_id), position)
+    else if (run.id) transientIdIndex.set(String(run.id), position)
   })
   return merged
 })
@@ -1502,8 +1537,8 @@ watch(
         const id = toolCall?.id ? String(toolCall.id) : ''
         if (!id || chatState.subagentThreadByToolCall[id]) return
         const args = parseToolCallArgs(toolCall)
-        if (args.thread_id || !args.subagent_type) return
-        makeChildThreadId(parentThreadId, String(args.subagent_type), id).then((childThreadId) => {
+        if (args.thread_id || !args.subagent_slug) return
+        makeChildThreadId(parentThreadId, String(args.subagent_slug), id).then((childThreadId) => {
           recordSubagentThread(id, childThreadId)
         })
       })
@@ -2375,7 +2410,7 @@ const handleSendMessage = async ({ image } = {}) => {
   try {
     const runResp = await agentApi.createAgentRun({
       query: text,
-      agent_id: currentAgentId.value,
+      agent_slug: currentAgentId.value,
       thread_id: threadId,
       meta: {
         request_id: requestId,
@@ -2427,7 +2462,7 @@ const handleSendOrStop = async (payload) => {
 // ==================== 人工审批处理 ====================
 const handleApprovalWithStream = async (answer) => {
   const threadId = approvalState.threadId
-  const parentRunId = approvalState.parentRunId
+  const interruptedRunId = approvalState.interruptedRunId
   if (!threadId) {
     message.error('无效的提问请求')
     approvalState.showModal = false
@@ -2441,7 +2476,7 @@ const handleApprovalWithStream = async (answer) => {
     return
   }
 
-  if (!parentRunId) {
+  if (!interruptedRunId) {
     message.error('无法找到需要恢复的运行任务')
     approvalState.showModal = false
     return
@@ -2454,15 +2489,14 @@ const handleApprovalWithStream = async (answer) => {
     threadState.pendingInterrupt = null
     threadState.isStreaming = true
     resetOnGoingConv(threadId)
-    const resumeRequestId = createClientRequestId()
+    const requestId = createClientRequestId()
     const runResp = await agentApi.createAgentRun({
       query: null,
-      agent_id: currentAgentId.value,
+      agent_slug: currentAgentId.value,
       thread_id: threadId,
-      meta: { request_id: resumeRequestId },
+      meta: { request_id: requestId },
       resume: answer,
-      parent_run_id: parentRunId,
-      resume_request_id: resumeRequestId
+      created_by_run_id: interruptedRunId
     })
     const runId = runResp?.run_id
     if (!runId) {

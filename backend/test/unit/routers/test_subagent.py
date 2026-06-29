@@ -45,7 +45,8 @@ class _ListRepo:
         _agent("chatbot", backend_id="ChatbotAgent"),
         _agent("worker", backend_id="SubAgentBackend", is_subagent=True),
     ]
-    include_subagents_calls: list[bool] = []
+    include_subagent_definition_calls: list[bool] = []
+    get_definition_calls: list[str] = []
 
     def __init__(self, _db):
         pass
@@ -53,12 +54,21 @@ class _ListRepo:
     async def ensure_default_agent(self):
         return self.items[0]
 
-    async def list_visible(self, *, user, include_subagents: bool = False):
+    async def list_visible(self, *, user, include_subagent_definitions: bool = False):
         del user
-        self.include_subagents_calls.append(include_subagents)
-        if include_subagents:
+        self.include_subagent_definition_calls.append(include_subagent_definitions)
+        if include_subagent_definitions:
             return self.items
         return [item for item in self.items if not item.is_subagent]
+
+    async def get_visible_by_slug(self, *, slug, user, kind="main"):
+        del user
+        if kind == "any":
+            self.get_definition_calls.append(slug)
+            return next((item for item in self.items if item.slug == slug), None)
+        if kind == "subagent":
+            return next((item for item in self.items if item.slug == slug and item.is_subagent), None)
+        return next((item for item in self.items if item.slug == slug and not item.is_subagent), None)
 
     async def serialize(self, item, **_kwargs):
         return dict(item.__dict__)
@@ -97,7 +107,7 @@ def _build_app(monkeypatch, repo_cls, *, role: str = "admin") -> TestClient:
 
 
 def test_agent_list_excludes_subagents_by_default(monkeypatch):
-    _ListRepo.include_subagents_calls = []
+    _ListRepo.include_subagent_definition_calls = []
     client = _build_app(monkeypatch, _ListRepo)
 
     response = client.get("/api/agent")
@@ -105,11 +115,11 @@ def test_agent_list_excludes_subagents_by_default(monkeypatch):
     assert response.status_code == 200, response.text
     payload = response.json()
     assert [agent["slug"] for agent in payload["agents"]] == ["chatbot"]
-    assert _ListRepo.include_subagents_calls == [False]
+    assert _ListRepo.include_subagent_definition_calls == [False]
 
 
 def test_agent_management_list_can_include_subagents(monkeypatch):
-    _ListRepo.include_subagents_calls = []
+    _ListRepo.include_subagent_definition_calls = []
     client = _build_app(monkeypatch, _ListRepo)
 
     response = client.get("/api/agent?include_subagents=true")
@@ -118,7 +128,19 @@ def test_agent_management_list_can_include_subagents(monkeypatch):
     payload = response.json()
     assert [agent["slug"] for agent in payload["agents"]] == ["chatbot", "worker"]
     assert payload["agents"][1]["is_subagent"] is True
-    assert _ListRepo.include_subagents_calls == [True]
+    assert _ListRepo.include_subagent_definition_calls == [True]
+
+
+def test_agent_detail_can_load_subagent_definition(monkeypatch):
+    _ListRepo.get_definition_calls = []
+    client = _build_app(monkeypatch, _ListRepo)
+
+    response = client.get("/api/agent/worker")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["agent"]["slug"] == "worker"
+    assert response.json()["agent"]["is_subagent"] is True
+    assert _ListRepo.get_definition_calls == ["worker"]
 
 
 def test_normal_user_can_create_agent(monkeypatch):

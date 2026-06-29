@@ -14,6 +14,7 @@ import {
   HelpCircle,
   Image,
   Network,
+  RefreshCw,
   SquareTerminal
 } from 'lucide-vue-next'
 
@@ -42,6 +43,11 @@ export const TOOL_ICON_MAP = {
   run_shell_command: SquareTerminal,
   search_file: FolderSearch,
   search_file_content: FolderSearch,
+  subagent_await: Bot,
+  subagent_cancel: Bot,
+  subagent_events: RefreshCw,
+  subagent_start: Bot,
+  subagent_status: RefreshCw,
   task: Bot,
   tavily_search: Globe,
   text_to_img_qwen_image: Image,
@@ -77,21 +83,51 @@ export const parseToolCallArgs = (toolCall) => {
   }
 }
 
-export const enrichTaskToolCall = (
+export const SUBAGENT_TOOL_IDS = [
+  'task',
+  'subagent_start',
+  'subagent_status',
+  'subagent_events',
+  'subagent_cancel',
+  'subagent_await'
+]
+
+export const isSubagentToolCall = (toolCall) => SUBAGENT_TOOL_IDS.includes(getToolCallId(toolCall))
+
+export const parseToolCallResult = (toolCall) => {
+  const content = toolCall?.tool_call_result?.content ?? toolCall?.result
+  if (!content) return null
+  if (typeof content === 'object') return content
+  try {
+    return JSON.parse(content)
+  } catch {
+    return null
+  }
+}
+
+export const enrichSubagentToolCall = (
   toolCall,
   { subagentRunById, subagentRunByThreadId, subagentOptionBySlug } = {}
 ) => {
-  if (getToolCallId(toolCall) !== 'task') return toolCall
+  if (!isSubagentToolCall(toolCall)) return toolCall
 
   const args = parseToolCallArgs(toolCall)
+  const result = parseToolCallResult(toolCall)
   const subagentRun =
     (toolCall.id ? subagentRunById?.get?.(String(toolCall.id)) : null) ||
-    (args.thread_id ? subagentRunByThreadId?.get?.(String(args.thread_id)) : null)
-  const subagentOption = args.subagent_type
-    ? subagentOptionBySlug?.get?.(String(args.subagent_type))
+    (result?.run_id ? subagentRunById?.get?.(String(result.run_id)) : null) ||
+    (args.thread_id ? subagentRunByThreadId?.get?.(String(args.thread_id)) : null) ||
+    (result?.thread_id ? subagentRunByThreadId?.get?.(String(result.thread_id)) : null)
+  const subagentOption = args.subagent_slug
+    ? subagentOptionBySlug?.get?.(String(args.subagent_slug))
     : null
   const displayLabel =
-    subagentRun?.subagent_name || subagentOption?.name || subagentRun?.subagent_type || undefined
+    result?.subagent_name ||
+    subagentRun?.subagent_name ||
+    subagentOption?.name ||
+    result?.subagent_slug ||
+    subagentRun?.subagent_slug ||
+    undefined
 
   return {
     ...toolCall,
@@ -113,7 +149,7 @@ export const normalizeToolCalls = (toolCalls, { includeHidden = false, mapToolCa
 
 export const enrichTaskToolCalls = (toolCalls, options = {}) =>
   normalizeToolCalls(toolCalls, {
-    mapToolCall: (toolCall) => enrichTaskToolCall(toolCall, options)
+    mapToolCall: (toolCall) => enrichSubagentToolCall(toolCall, options)
   })
 
 export const getToolIcon = (toolId) => TOOL_ICON_MAP[toolId] || null

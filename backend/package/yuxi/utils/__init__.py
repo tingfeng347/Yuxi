@@ -1,8 +1,6 @@
-import hashlib
 import os
-import time
-import uuid
 
+from yuxi.utils.hash_utils import hashstr as hashstr
 from yuxi.utils.logging_config import logger
 
 
@@ -25,32 +23,6 @@ def is_text_pdf(pdf_path):
     text_ratio = text_pages / total_pages
     # 如果超过50%的页面有文本内容，则认为是文本PDF
     return text_ratio > 0.5
-
-
-def hashstr(input_string, length=None, with_salt=False, salt=None):
-    """生成字符串的哈希值
-    Args:
-        input_string: 输入字符串
-        length: 截取长度，默认为None，表示不截取
-        with_salt: 是否加盐，默认为False
-    """
-    try:
-        # 尝试直接编码
-        encoded_string = str(input_string).encode("utf-8")
-    except UnicodeEncodeError:
-        # 如果编码失败，替换无效字符
-        encoded_string = str(input_string).encode("utf-8", errors="replace")
-
-    if with_salt:
-        if not salt:
-            # 使用时间戳+随机数的组合作为salt，确保唯一性
-            salt = f"{time.time()}_{uuid.uuid4().hex[:8]}"
-        encoded_string = (encoded_string.decode("utf-8") + salt).encode("utf-8")
-
-    hash = hashlib.sha256(encoded_string).hexdigest()
-    if length:
-        return hash[:length]
-    return hash
 
 
 def get_docker_safe_url(base_url):

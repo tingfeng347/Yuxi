@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -326,9 +326,10 @@ class AgentRepository:
             created_by=created_by,
         )
 
-    async def list_visible(self, *, user: User, include_subagents: bool = False) -> list[Agent]:
+    async def list_visible(self, *, user: User, include_subagent_definitions: bool = False) -> list[Agent]:
+        """列出用户可见的主智能体，只有显式请求时才包含子智能体定义。"""
         stmt = select(Agent)
-        if not include_subagents:
+        if not include_subagent_definitions:
             stmt = stmt.where(Agent.is_subagent.is_(False))
         result = await self.db.execute(stmt.order_by(Agent.is_default.desc(), Agent.id.asc()))
         agents = list(result.scalars().all())
@@ -353,19 +354,22 @@ class AgentRepository:
         result = await self.db.execute(select(Agent).where(Agent.slug.in_(slugs)))
         return list(result.scalars().all())
 
-    async def get_visible_by_slug(self, *, slug: str, user: User, include_subagents: bool = False) -> Agent | None:
+    async def get_visible_by_slug(
+        self, *, slug: str, user: User, kind: Literal["main", "subagent", "any"] = "main"
+    ) -> Agent | None:
+        """按 slug 读取用户可见智能体，并按入口语义过滤主/子智能体。"""
         agent = await self.get_by_slug(slug)
-        if not agent or (agent.is_subagent and not include_subagents):
+        if not agent:
             return None
-        if user_can_access_agent(user, agent):
+        if not user_can_access_agent(user, agent):
+            return None
+        if kind == "any":
             return agent
-        return None
-
-    async def get_visible_subagent_by_slug(self, *, slug: str, user: User) -> Agent | None:
-        agent = await self.get_visible_by_slug(slug=slug, user=user, include_subagents=True)
-        if agent and agent.is_subagent:
-            return agent
-        return None
+        if kind == "main":
+            return None if agent.is_subagent else agent
+        if kind == "subagent":
+            return agent if agent.is_subagent else None
+        raise ValueError(f"未知智能体入口类型: {kind}")
 
     async def get_default(self) -> Agent | None:
         result = await self.db.execute(select(Agent).where(Agent.is_default.is_(True)))

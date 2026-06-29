@@ -63,22 +63,36 @@ async def _send_chat_message(
     headers: dict[str, str],
     *,
     thread_id: str,
-    agent_config_id: int,
+    agent_slug: str,
     query: str,
 ) -> None:
-    async with client.stream(
-        "POST",
-        "/api/chat/agent",
+    response = await client.post(
+        "/api/agent/runs",
         json={
             "query": query,
-            "agent_config_id": agent_config_id,
+            "agent_slug": agent_slug,
             "thread_id": thread_id,
+            "meta": {"request_id": f"attachment-state-e2e-{uuid.uuid4()}"},
         },
         headers=headers,
-    ) as response:
-        assert response.status_code == 200, response.text
-        lines = [line async for line in response.aiter_lines() if line]
-        assert lines, "Streaming chat response should not be empty."
+    )
+    assert response.status_code == 200, response.text
+    run_id = response.json().get("run_id")
+    assert run_id, response.text
+
+    deadline = asyncio.get_running_loop().time() + 240
+    last_payload: dict | None = None
+    while asyncio.get_running_loop().time() < deadline:
+        run_response = await client.get(f"/api/agent/runs/{run_id}", headers=headers)
+        assert run_response.status_code == 200, run_response.text
+        last_payload = run_response.json().get("run") or {}
+        status = str(last_payload.get("status") or "")
+        if status in {"completed", "failed", "cancelled", "interrupted"}:
+            assert status == "completed", last_payload
+            return
+        await asyncio.sleep(2)
+
+    pytest.fail(f"Attachment chat run timed out: {last_payload}")
 
 
 async def test_attachment_upload_is_reflected_in_agent_state(
@@ -87,9 +101,8 @@ async def test_attachment_upload_is_reflected_in_agent_state(
     e2e_headers: dict[str, str],
     e2e_agent_context: dict[str, str | int],
 ):
-    agent_id = str(e2e_agent_context["agent_id"])
-    agent_config_id = int(e2e_agent_context["agent_config_id"])
-    thread_id = await _create_thread(e2e_client, e2e_headers, agent_id)
+    agent_slug = str(e2e_agent_context["agent_slug"])
+    thread_id = await _create_thread(e2e_client, e2e_headers, agent_slug)
 
     test_file = tmp_path / "attachment-state.md"
     test_file.write_text(
@@ -121,7 +134,7 @@ async def test_attachment_upload_is_reflected_in_agent_state(
         e2e_client,
         e2e_headers,
         thread_id=thread_id,
-        agent_config_id=agent_config_id,
+        agent_slug=agent_slug,
         query="你好，请简单介绍一下你自己。",
     )
 

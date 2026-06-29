@@ -17,7 +17,8 @@ from yuxi import config as sys_config
 from yuxi.agents.context import DEFAULT_MAX_EXECUTION_STEPS, BaseContext, resolve_agent_resource_options
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.utils import logger
-from yuxi.utils.subagent_thread_utils import make_child_thread_id
+from yuxi.utils.hash_utils import subagent_child_thread_id
+from yuxi.utils.thread_utils import extract_thread_id as _metadata_thread_id
 
 
 def _json_safe(value: Any) -> Any:
@@ -55,20 +56,6 @@ def _normalize_tool_event_data(data: Any) -> Any:
     return {**data, "output": tool_message}
 
 
-def _metadata_thread_id(value: Any) -> str | None:
-    if not isinstance(value, dict):
-        return None
-    for key in ("thread_id", "subagent_thread_id"):
-        thread_id = value.get(key)
-        if isinstance(thread_id, str) and thread_id.strip():
-            return thread_id.strip()
-    for key in ("metadata", "configurable", "config"):
-        thread_id = _metadata_thread_id(value.get(key))
-        if thread_id:
-            return thread_id
-    return None
-
-
 def _subagent_route_for_namespace(
     routes: dict[tuple[str, ...], dict[str, str]], namespace: list[str]
 ) -> dict[str, str] | None:
@@ -89,7 +76,7 @@ async def _collect_subagent_routes(run, parent_thread_id: str, routes: dict[tupl
     try:
         async for subagent in subagents:
             path = tuple(getattr(subagent, "path", ()) or ())
-            subagent_type = getattr(subagent, "name", None) or getattr(subagent, "graph_name", None)
+            subagent_slug = getattr(subagent, "name", None) or getattr(subagent, "graph_name", None)
             cause = getattr(subagent, "cause", None)
             tool_call_id = (
                 cause.get("tool_call_id") if isinstance(cause, dict) else getattr(subagent, "trigger_call_id", None)
@@ -97,13 +84,13 @@ async def _collect_subagent_routes(run, parent_thread_id: str, routes: dict[tupl
             state = getattr(subagent, "state", None)
             metadata = getattr(subagent, "metadata", None)
             thread_id = _metadata_thread_id(metadata) or _metadata_thread_id(state)
-            if not thread_id and isinstance(subagent_type, str) and isinstance(tool_call_id, str) and tool_call_id:
-                thread_id = make_child_thread_id(parent_thread_id, subagent_type, tool_call_id)
-            if path and isinstance(subagent_type, str) and isinstance(tool_call_id, str) and tool_call_id and thread_id:
+            if not thread_id and isinstance(subagent_slug, str) and isinstance(tool_call_id, str) and tool_call_id:
+                thread_id = subagent_child_thread_id(parent_thread_id, subagent_slug, tool_call_id)
+            if path and isinstance(subagent_slug, str) and isinstance(tool_call_id, str) and tool_call_id and thread_id:
                 routes[path] = {
                     "thread_id": thread_id,
                     "parent_thread_id": parent_thread_id,
-                    "subagent_type": subagent_type,
+                    "subagent_slug": subagent_slug,
                     "tool_call_id": tool_call_id,
                 }
     except asyncio.CancelledError:
@@ -252,9 +239,7 @@ class BaseAgent:
                 if method == "messages":
                     msg, metadata = data
                     metadata = dict(metadata or {})
-                    actual_thread_id = (
-                        _metadata_thread_id(metadata) or _metadata_thread_id(params) or _metadata_thread_id(data)
-                    )
+                    actual_thread_id = (subagent_route or {}).get("thread_id") or _metadata_thread_id(metadata)
                     metadata["namespace"] = namespace
                     metadata["stream_event"] = {"method": method, "namespace": namespace}
                     if subagent_route:
@@ -272,7 +257,7 @@ class BaseAgent:
                         "namespace": namespace,
                         "data": _json_safe(data),
                     }
-                    actual_thread_id = _metadata_thread_id(params) or _metadata_thread_id(data)
+                    actual_thread_id = (subagent_route or {}).get("thread_id") or _metadata_thread_id(params)
                     if subagent_route:
                         event_payload.update(subagent_route)
                     if actual_thread_id:

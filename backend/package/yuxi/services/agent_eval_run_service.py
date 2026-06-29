@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yuxi.repositories.agent_repository import AgentRepository
 from yuxi.repositories.conversation_repository import ConversationRepository
 from yuxi.services.agent_run_service import await_agent_run_result, create_agent_run_view
+from yuxi.services.input_message_service import build_chat_input_message
 from yuxi.storage.postgres.models_business import User
 
 EVALUATION_SOURCE = "agent_evaluation"
@@ -99,11 +100,10 @@ async def run_agent_eval(
         "attachment_file_ids": (meta or {}).get("attachment_file_ids") or [],
     }
     run_response = await create_agent_run_view(
-        query=query,
-        agent_id=agent_item.slug,
+        input_message=build_chat_input_message(query, image_content),
+        agent_slug=agent_item.slug,
         thread_id=thread_id,
         meta=run_meta,
-        image_content=image_content,
         current_uid=str(current_user.uid),
         db=db,
         model_spec=model_spec,

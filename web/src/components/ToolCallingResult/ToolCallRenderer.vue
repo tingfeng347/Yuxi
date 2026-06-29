@@ -28,6 +28,7 @@ import OpenKbDocumentTool from './tools/OpenKbDocumentTool.vue'
 import CalculatorTool from './tools/CalculatorTool.vue'
 import TodoListTool from './tools/TodoListTool.vue'
 import TaskTool from './tools/TaskTool.vue'
+import SubagentLifecycleTool from './tools/SubagentLifecycleTool.vue'
 import ImageTool from './tools/ImageTool.vue'
 import WriteFileTool from './tools/WriteFileTool.vue'
 import ReadFileTool from './tools/ReadFileTool.vue'
@@ -85,6 +86,11 @@ const TOOL_RENDERERS = {
   run_shell_command: ExecuteTool,
   search_file: SearchFileTool,
   search_file_content: SearchFileContentTool,
+  subagent_await: SubagentLifecycleTool,
+  subagent_cancel: SubagentLifecycleTool,
+  subagent_events: SubagentLifecycleTool,
+  subagent_start: SubagentLifecycleTool,
+  subagent_status: SubagentLifecycleTool,
   task: TaskTool,
   tavily_search: WebSearchTool,
   text_to_img_qwen_image: ImageTool,

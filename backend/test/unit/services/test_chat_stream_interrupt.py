@@ -215,9 +215,12 @@ async def test_stream_agent_resume_routes_subagent_chunks(monkeypatch):
         context_schema = FakeContext
 
         async def stream_resume_with_state(self, resume_command, input_context=None, **kwargs):
-            yield "messages", (
-                {"content": "child token", "id": "msg-child"},
-                {"namespace": ["task:1"], "thread_id": "child-thread"},
+            yield (
+                "messages",
+                (
+                    {"content": "child token", "id": "msg-child"},
+                    {"namespace": ["task:1"], "thread_id": "child-thread"},
+                ),
             )
 
         async def get_graph(self, context=None):
@@ -261,17 +264,24 @@ async def test_stream_agent_resume_routes_subagent_chunks(monkeypatch):
     )
 
     chunks = []
+    loading = None
     async for raw in stream:
         chunk = json.loads(raw.decode("utf-8"))
         chunks.append(chunk)
         if chunk.get("status") == "loading":
+            loading = chunk
+        if chunk.get("status") == "finished":
             break
     await stream.aclose()
 
-    loading = chunks[-1]
+    assert loading is not None
     assert loading["thread_id"] == "child-thread"
     assert loading["response"] == "child token"
     assert loading["stream_event"]["thread_id"] == "child-thread"
+    finished = chunks[-1]
+    assert finished["status"] == "finished"
+    assert finished["meta"]["agent_slug"] == "main-agent"
+    assert "agent_id" not in finished["meta"]
 
 
 class TestCoerceInterruptPayload:

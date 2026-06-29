@@ -16,7 +16,7 @@ async def test_agent_run_endpoints_require_authentication(test_client):
 
     create_response = await test_client.post(
         "/api/agent/runs",
-        json={"query": "hello", "agent_id": "default-chatbot", "thread_id": str(uuid.uuid4())},
+        json={"query": "hello", "agent_slug": "default-chatbot", "thread_id": str(uuid.uuid4())},
     )
     assert create_response.status_code == 401
     assert (await test_client.get(f"/api/agent/runs/{run_id}")).status_code == 401
@@ -26,7 +26,7 @@ async def test_agent_run_endpoints_require_authentication(test_client):
 async def test_agent_run_create_rejects_empty_input(test_client, admin_headers):
     response = await test_client.post(
         "/api/agent/runs",
-        json={"query": "", "agent_id": "default-chatbot", "thread_id": str(uuid.uuid4())},
+        json={"query": "", "agent_slug": "default-chatbot", "thread_id": str(uuid.uuid4())},
         headers=admin_headers,
     )
     assert response.status_code == 422
