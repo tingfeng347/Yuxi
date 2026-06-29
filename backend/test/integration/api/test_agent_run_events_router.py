@@ -27,6 +27,8 @@ async def _collect_sse_payloads(response) -> list[tuple[str, dict, str | None]]:
         if not line:
             if data_lines:
                 payloads.append((event, json.loads("\n".join(data_lines)), event_id))
+                if event == "end":
+                    return payloads
             event = "message"
             event_id = None
             data_lines = []
@@ -53,7 +55,8 @@ async def test_run_events_verbose_false_returns_compact_payload(test_client, sta
     try:
         await conn.execute(
             """
-            INSERT INTO agent_runs (id, thread_id, agent_id, uid, request_id, input_payload, status, run_type)
+            INSERT INTO agent_runs
+                (id, conversation_thread_id, agent_slug, uid, request_id, input_payload, status, run_type)
             VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
             """,
             run_id,
@@ -74,7 +77,7 @@ async def test_run_events_verbose_false_returns_compact_payload(test_client, sta
             "metadata",
             {
                 "request_id": request_id,
-                "agent_id": "deep-research",
+                "agent_slug": "deep-research",
                 "backend_id": "ChatbotAgent",
                 "uid": uid,
             },

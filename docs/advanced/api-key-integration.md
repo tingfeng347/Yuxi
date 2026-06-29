@@ -31,7 +31,7 @@ Yuxi 后端服务绑定在 `0.0.0.0:5050`，不会自动探测或对外宣告本
 
 ## 接口调用方式
 
-> **关于 `agent_id` 的说明**：下文所有示例中的 `agent_id` 对应的是智能体的 **slug** 字段（如 `default-chatbot`），而非数据库自增 ID 或 `agent_config_id`。请通过 `GET /api/agent` 列表接口确认目标智能体的 slug 值。
+> **关于 `agent_id` / `agent_slug` 的说明**：创建会话线程时仍使用 `agent_id` 绑定目标 Agent；创建运行任务时使用 `agent_slug` 快照本次运行目标。二者的取值都是智能体的 **slug**（如 `default-chatbot`），不是数据库自增 ID 或 `agent_config_id`。
 
 外部系统通过 HTTP 请求调用 Yuxi 接口时，需要在请求头中携带 API Key：
 
@@ -45,7 +45,7 @@ Authorization: Bearer yxkey_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 2. 创建运行任务：`POST /api/agent/runs`
 3. 订阅事件流：`GET /api/agent/runs/{run_id}/events`
 
-`POST /api/agent/runs` 请求体必填 `query`、`agent_id` 和 `thread_id`，可选字段包括 `meta`、`image_content`、`resume`、`parent_run_id`、`resume_request_id`。接口返回 `run_id`、`thread_id`、`status`、`request_id` 和 `stream_url`。
+`POST /api/agent/runs` 请求体必填 `query`、`agent_slug` 和 `thread_id`，可选字段包括 `meta`、`image_content`、`resume`、`created_by_run_id`。接口返回 `run_id`、`thread_id`、`status`、`request_id` 和 `stream_url`。
 
 以下是一个典型的 Python 调用示例：
 
@@ -76,7 +76,7 @@ run_resp = requests.post(
     headers=headers,
     json={
         "query": "你好，请介绍一下你自己",
-        "agent_id": "default-chatbot",
+        "agent_slug": "default-chatbot",
         "thread_id": thread_id,
         "meta": {"request_id": "external-request-001"},
     },
@@ -116,7 +116,7 @@ with requests.get(f"{base_url}{run['stream_url']}", headers=headers, stream=True
 ```json
 {
     "query": "继续上一轮话题",
-    "agent_id": "default-chatbot",
+    "agent_slug": "default-chatbot",
     "thread_id": "existing-thread-id",
     "meta": {}
 }

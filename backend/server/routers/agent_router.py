@@ -20,11 +20,12 @@ from yuxi.services.agent_run_service import (
     cancel_agent_run_view,
     create_agent_run_view,
     get_active_run_by_thread,
-    get_agent_run_result_view,
+    get_agent_run_result,
     get_agent_run_view,
     stream_agent_run_events,
 )
 from yuxi.services.agent_eval_run_service import run_agent_eval
+from yuxi.services.input_message_service import build_chat_input_message
 from yuxi.storage.postgres.models_business import User
 
 agent_router = APIRouter(prefix="/agent", tags=["agent"])
@@ -55,14 +56,13 @@ class AgentUpdate(BaseModel):
 
 class AgentRunCreate(BaseModel):
     query: str | None = Field(None, description="用户输入的问题")
-    agent_id: str = Field(..., description="智能体 ID")
+    agent_slug: str = Field(..., description="智能体 slug")
     thread_id: str = Field(..., description="会话线程 ID")
     meta: dict = Field(default_factory=dict, description="可选，请求追踪信息，例如 request_id")
     image_content: str | None = Field(None, description="可选，base64 图片内容")
     model_spec: str | None = Field(None, description="可选，对话级模型覆盖，优先级高于智能体配置")
-    resume: Any | None = Field(None, description="可选，恢复 interrupted run 的输入")
-    parent_run_id: str | None = Field(None, description="可选，被恢复的 run ID")
-    resume_request_id: str | None = Field(None, description="可选，resume 幂等键")
+    resume: Any | None = Field(None, description="可选，恢复时传给 LangGraph 的输入载荷，非布尔值")
+    created_by_run_id: str | None = Field(None, description="可选，创建本 run 的父 run ID；resume 时为被恢复的 run ID")
 
 
 class AgentEvaluationContext(BaseModel):
@@ -137,7 +137,7 @@ async def list_agents(
 ):
     repo = AgentRepository(db)
     await repo.ensure_default_agent()
-    items = await repo.list_visible(user=current_user, include_subagents=include_subagents)
+    items = await repo.list_visible(user=current_user, include_subagent_definitions=include_subagents)
     backend_info_cache: dict[tuple[str, bool, str], dict] = {}
     agents = [await _serialize_agent(repo, item, current_user, backend_info_cache=backend_info_cache) for item in items]
     return {"agents": agents}
@@ -185,7 +185,8 @@ async def create_agent(
 @agent_router.get("/{agent_id}")
 async def get_agent(agent_id: str, current_user: User = Depends(get_required_user), db: AsyncSession = Depends(get_db)):
     repo = AgentRepository(db)
-    item = await repo.get_visible_by_slug(slug=agent_id, user=current_user, include_subagents=True)
+    agent_slug = agent_id  # 兼容既有路径参数名；这里实际是 Agent.slug。
+    item = await repo.get_visible_by_slug(slug=agent_slug, user=current_user, kind="any")
     if not item:
         raise HTTPException(status_code=404, detail="智能体不存在")
     return {"agent": await _serialize_agent(repo, item, current_user, include_configurable_items=True)}
@@ -199,7 +200,8 @@ async def update_agent(
     db: AsyncSession = Depends(get_db),
 ):
     repo = AgentRepository(db)
-    item = await repo.get_visible_by_slug(slug=agent_id, user=current_user, include_subagents=True)
+    agent_slug = agent_id  # 兼容既有路径参数名；这里实际是 Agent.slug。
+    item = await repo.get_visible_by_slug(slug=agent_slug, user=current_user, kind="any")
     if not item:
         raise HTTPException(status_code=404, detail="智能体不存在")
     if not user_can_manage_agent(current_user, item):
@@ -236,7 +238,8 @@ async def delete_agent(
     agent_id: str, current_user: User = Depends(get_required_user), db: AsyncSession = Depends(get_db)
 ):
     repo = AgentRepository(db)
-    item = await repo.get_visible_by_slug(slug=agent_id, user=current_user, include_subagents=True)
+    agent_slug = agent_id  # 兼容既有路径参数名；这里实际是 Agent.slug。
+    item = await repo.get_visible_by_slug(slug=agent_slug, user=current_user, kind="any")
     if not item:
         raise HTTPException(status_code=404, detail="智能体不存在")
     if not user_can_manage_agent(current_user, item):
@@ -254,7 +257,8 @@ async def set_agent_default(
     db: AsyncSession = Depends(get_db),
 ):
     repo = AgentRepository(db)
-    item = await repo.get_by_slug(agent_id)
+    agent_slug = agent_id  # 兼容既有路径参数名；这里实际是 Agent.slug。
+    item = await repo.get_by_slug(agent_slug)
     if not item:
         raise HTTPException(status_code=404, detail="智能体不存在")
     try:
@@ -270,18 +274,19 @@ async def create_agent_run(
     current_user: User = Depends(get_required_user),
     db: AsyncSession = Depends(get_db),
 ):
+    input_message = None
+    if payload.resume is None and payload.query:
+        input_message = build_chat_input_message(payload.query, payload.image_content)
     return await create_agent_run_view(
-        query=payload.query,
-        agent_id=payload.agent_id,
+        input_message=input_message,
+        agent_slug=payload.agent_slug,
         thread_id=payload.thread_id,
         meta=dict(payload.meta or {}),
-        image_content=payload.image_content,
         model_spec=payload.model_spec,
         current_uid=str(current_user.uid),
         db=db,
         resume=payload.resume,
-        parent_run_id=payload.parent_run_id,
-        resume_request_id=payload.resume_request_id,
+        created_by_run_id=payload.created_by_run_id,
     )
 
 
@@ -311,10 +316,10 @@ async def get_agent_run(
 
 
 @agent_router.get("/runs/{run_id}/result")
-async def get_agent_run_result(
+async def get_agent_run_result_route(
     run_id: str, current_user: User = Depends(get_required_user), db: AsyncSession = Depends(get_db)
 ):
-    return await get_agent_run_result_view(run_id=run_id, current_uid=str(current_user.uid), db=db)
+    return await get_agent_run_result(run_id=run_id, current_uid=str(current_user.uid), db=db)
 
 
 @agent_router.post("/runs/{run_id}/cancel")

@@ -67,14 +67,16 @@ class ConversationRepository:
             snippet = f"{snippet}..."
         return snippet[:MESSAGE_SEARCH_SNIPPET_MAX_LENGTH]
 
-    async def create_conversation(
+    async def add_conversation(
         self,
+        *,
         uid: str,
         agent_id: str,
         title: str | None = None,
         thread_id: str | None = None,
         metadata: dict | None = None,
     ) -> Conversation:
+        """创建对话和统计记录但只 flush，供外层事务继续绑定关系。"""
         if not thread_id:
             thread_id = str(uuid_lib.uuid4())
 
@@ -97,17 +99,36 @@ class ConversationRepository:
 
         stats = ConversationStats(conversation_id=conversation.id)
         self.db.add(stats)
-        await self.db.commit()
-        await self.db.refresh(conversation)
+        await self.db.flush()
 
         logger.info(f"Created conversation: {conversation.thread_id} for user {uid}")
+        return conversation
+
+    async def create_conversation(
+        self,
+        uid: str,
+        agent_id: str,
+        title: str | None = None,
+        thread_id: str | None = None,
+        metadata: dict | None = None,
+    ) -> Conversation:
+        """创建并提交一个完整对话，适用于不需要外层事务编排的入口。"""
+        conversation = await self.add_conversation(
+            uid=uid,
+            agent_id=agent_id,
+            title=title,
+            thread_id=thread_id,
+            metadata=metadata,
+        )
+        await self.db.commit()
+        await self.db.refresh(conversation)
         return conversation
 
     async def get_conversation_by_thread_id(self, thread_id: str) -> Conversation | None:
         result = await self.db.execute(select(Conversation).where(Conversation.thread_id == thread_id))
         return result.scalar_one_or_none()
 
-    async def _get_conversation_by_id(self, conversation_id: int) -> Conversation | None:
+    async def get_conversation_by_id(self, conversation_id: int) -> Conversation | None:
         result = await self.db.execute(select(Conversation).where(Conversation.id == conversation_id))
         return result.scalar_one_or_none()
 
@@ -149,7 +170,7 @@ class ConversationRepository:
         )
 
         self.db.add(message)
-        conversation = await self._get_conversation_by_id(conversation_id)
+        conversation = await self.get_conversation_by_id(conversation_id)
         if conversation:
             conversation.updated_at = utc_now_naive()
 
@@ -506,7 +527,7 @@ class ConversationRepository:
             await self.db.commit()
 
     async def get_attachments(self, conversation_id: int) -> list[dict]:
-        conversation = await self._get_conversation_by_id(conversation_id)
+        conversation = await self.get_conversation_by_id(conversation_id)
         if not conversation:
             return []
         metadata = self._ensure_metadata(conversation)
@@ -519,7 +540,7 @@ class ConversationRepository:
         return await self.get_attachments(conversation.id)
 
     async def add_attachment(self, conversation_id: int, attachment_info: dict) -> dict | None:
-        conversation = await self._get_conversation_by_id(conversation_id)
+        conversation = await self.get_conversation_by_id(conversation_id)
         if not conversation:
             return None
 
@@ -532,7 +553,7 @@ class ConversationRepository:
         return attachment_info
 
     async def add_attachments(self, conversation_id: int, attachment_infos: list[dict]) -> list[dict] | None:
-        conversation = await self._get_conversation_by_id(conversation_id)
+        conversation = await self.get_conversation_by_id(conversation_id)
         if not conversation:
             return None
 
@@ -548,7 +569,7 @@ class ConversationRepository:
     async def update_attachment_status(
         self, conversation_id: int, file_id: str, status: str, update_fields: dict | None = None
     ) -> dict | None:
-        conversation = await self._get_conversation_by_id(conversation_id)
+        conversation = await self.get_conversation_by_id(conversation_id)
         if not conversation:
             return None
 
@@ -571,7 +592,7 @@ class ConversationRepository:
     async def bind_attachments_to_request(
         self, conversation_id: int, request_id: str, file_ids: list[str]
     ) -> list[dict]:
-        conversation = await self._get_conversation_by_id(conversation_id)
+        conversation = await self.get_conversation_by_id(conversation_id)
         if not conversation or not request_id or not file_ids:
             return []
 
@@ -601,7 +622,7 @@ class ConversationRepository:
         return [item for item in attachments if item.get("request_id") == request_id]
 
     async def remove_attachment(self, conversation_id: int, file_id: str) -> bool:
-        conversation = await self._get_conversation_by_id(conversation_id)
+        conversation = await self.get_conversation_by_id(conversation_id)
         if not conversation:
             return False
 

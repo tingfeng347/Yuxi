@@ -56,7 +56,7 @@ async def e2e_headers(e2e_client: httpx.AsyncClient) -> dict[str, str]:
 
 
 @pytest_asyncio.fixture(scope="function")
-async def e2e_agent_context(e2e_client: httpx.AsyncClient, e2e_headers: dict[str, str]) -> dict[str, str | int]:
+async def e2e_agent_context(e2e_client: httpx.AsyncClient, e2e_headers: dict[str, str]) -> dict[str, str]:
     me_response = await e2e_client.get("/api/auth/me", headers=e2e_headers)
     if me_response.status_code != 200:
         pytest.fail(
@@ -67,13 +67,8 @@ async def e2e_agent_context(e2e_client: httpx.AsyncClient, e2e_headers: dict[str
         pytest.fail("Current user payload missing uid field for E2E tests.")
 
     default_response = await e2e_client.get("/api/agent/default", headers=e2e_headers)
-    default_agent_slug = None
     if default_response.status_code == 200:
-        default_agent = default_response.json().get("agent") or {}
-        default_agent_slug = default_agent.get("agent_id") or default_agent.get("slug")
-
-    if default_agent_slug:
-        agent_id = str(default_agent_slug)
+        agent = default_response.json().get("agent") or {}
     else:
         response = await e2e_client.get("/api/agent", headers=e2e_headers)
         if response.status_code != 200:
@@ -81,8 +76,10 @@ async def e2e_agent_context(e2e_client: httpx.AsyncClient, e2e_headers: dict[str
         agents = response.json().get("agents") or []
         if not agents:
             pytest.fail("No agents are available for E2E tests.")
-        agent_id = str(agents[0].get("agent_id") or agents[0].get("slug") or "")
-        if not agent_id:
-            pytest.fail(f"Agent payload missing agent_id field: {agents[0]}")
+        agent = agents[0]
 
-    return {"agent_id": agent_id, "agent_config_id": 0, "uid": str(uid)}
+    agent_slug = agent.get("slug") or agent.get("agent_id")
+    if not agent_slug:
+        pytest.fail(f"Agent payload missing slug/agent_id field for E2E tests: {agent}")
+
+    return {"agent_slug": str(agent_slug), "agent_id": str(agent_slug), "uid": str(uid)}

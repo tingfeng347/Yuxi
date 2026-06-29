@@ -49,6 +49,11 @@
 - 下沉 AgentRun 基础能力：将「读取某个 run 的最终结果」（`get_agent_run_result`/`load_agent_run_result`，含状态、最终 assistant 输出、Langfuse trace id 与错误）与「阻塞至 run 终结再取结果」（`await_agent_run_result`，复用有限事件流、无额外轮询）提升进 `agent_run_service`，供 chat/eval 及未来定时任务统一复用；eval 运行入口改为非流式复用该能力（不再做 SSE 封装），移除其私有结果构建逻辑（结果不变）。
 - 重构 AgentRun 接口底座：`agent_run_service` 拆出内部 `create_agent_run`、`enqueue_agent_run` 与 `request_cancel_agent_run`，保留现有 `/api/agent/runs` 行为并新增 `/api/agent/runs/{run_id}/result` 结果读取接口；`AgentRunRepository` 增加按 `parent_agent_run_id` 查询 child run 的能力，为后续异步 subagent 生命周期控制预留统一入口。
 - 修复子智能体流式事件兼容：Yuxi task middleware 的 DeepAgents 子智能体 transformer 改用专用 `yuxi_subagents` projection，避免与 LangChain `create_agent` 默认注册的 `subagents` projection 冲突导致运行流式消息时报错；子线程路由收集优先读取 Yuxi projection，并保留原 `subagents` fallback。
+- 重构 AgentRun 与子智能体运行链路：保留现有 `/api/agent/runs` 行为并新增 `/api/agent/runs/{run_id}/result` 结果读取接口；子智能体新增 `subagent_start/status/events/cancel/await` 工具，支持后台启动、事件读取、等待结果、取消运行和已完成 child thread 续跑；同一用户、同一子智能体、同一 conversation thread 存在运行中 run 时返回 busy，不做隐藏排队。
+- 修复 AgentRun busy 检查的并发窗口：为同一用户、智能体和 conversation thread 的非终态 run 增加数据库部分唯一索引，并在插入冲突时返回现有 `run_busy` 结构，避免不同 `request_id` 并发启动绕过忙碌检查；AgentRun 创建冲突改用局部 savepoint 处理，避免 `_create_agent_run` 在共享 session 上 rollback 撤销调用方刚创建的子智能体线程关系或输入消息。
+- 收敛 AgentRun 数据模型与输入语义：运行记录统一使用 `agent_slug`、`conversation_thread_id`、`created_by_run_id`、`input_message_id` 等字段，子智能体通过 `subagent_threads` 关系表维护 parent/child conversation 归属；补齐旧库升级时 `subagent_threads.subagent_slug/created_by_run_id` 的静默回填与约束收敛，避免早期分支库保留 nullable schema；Agent 状态中的 `subagent_runs` 改为以 `run_id` 作为执行身份，`resume` 请求字段明确为 `Command(resume=...)` 输入载荷。
+- 精简旧链路与失败语义：恢复审批统一走 `POST /api/agent/runs` 的 `resume` 载荷，移除旧 `POST /api/chat/thread/{id}/resume` 流式接口和已废弃的 `chat_service.agent_chat`；子智能体运行缺少必要线程上下文时直接报错，状态查询只在真实缺失或无权访问时返回 404，内部运行记录格式异常返回 500。
+- 统一流式事件线程 ID 提取契约：新增共享 `extract_thread_id` 工具，`BaseAgent`、聊天服务和 run worker 统一只读取规范化事件的一层稳定路径，并通过显式 fallback 处理父线程归属，避免递归扫描嵌套 metadata 导致父/子线程事件路由分歧。
 
 ## v0.7.0 (2026-06-13)
 

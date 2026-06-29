@@ -7,6 +7,11 @@ from types import SimpleNamespace
 import pytest
 
 import yuxi.services.agent_run_service as agent_run_service
+from yuxi.services.input_message_service import build_chat_input_message
+
+
+def _chat_input(content: str, image_content: str | None = None):
+    return build_chat_input_message(content, image_content)
 
 
 def _sse_data(chunk: str) -> dict:
@@ -28,6 +33,124 @@ class _FakeContext:
 
 class _FakeBackend:
     context_schema = _FakeContext
+
+
+class _UserResult:
+    def scalar_one_or_none(self):
+        return SimpleNamespace(uid="user-1", role="user")
+
+
+class _CreateRunDb:
+    def __init__(
+        self,
+        *,
+        message_id: int = 10,
+        active_run: SimpleNamespace | None = None,
+        active_run_after_rollback: SimpleNamespace | None = None,
+        existing_run: SimpleNamespace | None = None,
+        existing_run_after_rollback: SimpleNamespace | None = None,
+        runs_by_id: dict[str, SimpleNamespace] | None = None,
+        raise_create_integrity_error: bool = False,
+    ):
+        self.added = []
+        self.deleted = []
+        self.committed = False
+        self.created_run = None
+        self.created_run_kwargs = None
+        self.enqueued: list[tuple[str, str, str]] = []
+        self.order: list[str] = []
+        self.request_id_lookups: list[str] = []
+        self.active_run_lookup = None
+        self.active_run = active_run
+        self.active_run_after_rollback = active_run_after_rollback
+        self.existing_run = existing_run
+        self.existing_run_after_rollback = existing_run_after_rollback
+        self.runs_by_id = runs_by_id or {}
+        self.raise_create_integrity_error = raise_create_integrity_error
+        self._message_id = message_id
+
+    async def execute(self, stmt):
+        del stmt
+        return _UserResult()
+
+    def add(self, item):
+        self.added.append(item)
+
+    async def flush(self):
+        self.order.append("flush")
+        for item in self.added:
+            if getattr(item, "id", None) is None:
+                item.id = self._message_id
+
+    async def commit(self):
+        self.order.append("commit")
+        self.committed = True
+
+    async def rollback(self):
+        self.order.append("rollback")
+
+    async def delete(self, item):
+        self.deleted.append(item)
+        self.order.append("delete")
+
+    def begin_nested(self):
+        db = self
+
+        class NestedTransaction:
+            async def __aenter__(self):
+                db.order.append("begin_nested")
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                if exc_type is agent_run_service.IntegrityError:
+                    db.order.append("rollback_savepoint")
+                else:
+                    db.order.append("release_savepoint")
+                return False
+
+        return NestedTransaction()
+
+
+class _CreateRunRepo:
+    def __init__(self, db_session):
+        self.db = db_session
+
+    async def get_run_by_request_id(self, request_id: str):
+        self.db.request_id_lookups.append(request_id)
+        if "rollback_savepoint" in self.db.order and self.db.existing_run_after_rollback:
+            return self.db.existing_run_after_rollback
+        return self.db.existing_run
+
+    async def get_active_run_by_thread_for_user(self, *, agent_slug: str, conversation_thread_id: str, uid: str):
+        self.db.active_run_lookup = {
+            "agent_slug": agent_slug,
+            "conversation_thread_id": conversation_thread_id,
+            "uid": uid,
+        }
+        if "rollback_savepoint" in self.db.order and self.db.active_run_after_rollback:
+            return self.db.active_run_after_rollback
+        return self.db.active_run
+
+    async def get_run_for_user(self, run_id: str, uid: str):
+        assert uid == "user-1"
+        return self.db.runs_by_id.get(run_id)
+
+    async def create_run(self, **kwargs):
+        self.db.created_run_kwargs = kwargs
+        if self.db.raise_create_integrity_error:
+            raise agent_run_service.IntegrityError("insert agent_run", kwargs, Exception("duplicate request_id"))
+        self.db.created_run = SimpleNamespace(
+            id=kwargs["run_id"],
+            conversation_thread_id=kwargs["conversation_thread_id"],
+            agent_slug=kwargs["agent_slug"],
+            status="pending",
+            request_id=kwargs["request_id"],
+            uid=kwargs["uid"],
+            run_type=kwargs["run_type"],
+            created_by_run_id=kwargs.get("created_by_run_id"),
+            subagent_thread_relation_id=kwargs.get("subagent_thread_relation_id"),
+        )
+        return self.db.created_run
 
 
 @pytest.mark.asyncio
@@ -72,7 +195,7 @@ async def test_stream_agent_run_events_reads_redis_and_ends_on_end_event(monkeyp
 
         async def get_run_for_user(self, run_id: str, uid: str):
             del run_id, uid
-            return SimpleNamespace(status="completed", thread_id="thread-1")
+            return SimpleNamespace(status="completed", conversation_thread_id="thread-1")
 
     calls = {"count": 0}
 
@@ -141,7 +264,7 @@ async def test_stream_agent_run_events_compacts_verbose_false(monkeypatch: pytes
 
         async def get_run_for_user(self, run_id: str, uid: str):
             del run_id, uid
-            return SimpleNamespace(status="completed", thread_id="thread-1")
+            return SimpleNamespace(status="completed", conversation_thread_id="thread-1")
 
     async def fake_list_events(run_id: str, *, after_seq: str, limit: int):
         del run_id, after_seq, limit
@@ -156,7 +279,7 @@ async def test_stream_agent_run_events_compacts_verbose_false(monkeypatch: pytes
                     "event": "metadata",
                     "payload": {
                         "request_id": "req-1",
-                        "agent_id": "deep-research",
+                        "agent_slug": "deep-research",
                         "backend_id": "ChatbotAgent",
                         "uid": "user-1",
                     },
@@ -340,7 +463,7 @@ async def test_stream_agent_run_events_compact_fallback_end_keeps_request_id(mon
 
         async def get_run_for_user(self, run_id: str, uid: str):
             del run_id, uid
-            return SimpleNamespace(status="completed", thread_id="thread-1", request_id="req-1")
+            return SimpleNamespace(status="completed", conversation_thread_id="thread-1", request_id="req-1")
 
     async def fake_list_events(run_id: str, *, after_seq: str, limit: int):
         del run_id, after_seq, limit
@@ -374,291 +497,328 @@ async def test_stream_agent_run_events_compact_fallback_end_keeps_request_id(mon
 
 @pytest.mark.asyncio
 async def test_create_agent_run_persists_input_before_enqueue(monkeypatch: pytest.MonkeyPatch):
-    class FakeResult:
-        def scalar_one_or_none(self):
-            return SimpleNamespace(uid="user-1", role="user")
-
-    class FakeDB:
-        def __init__(self):
-            self.order: list[str] = []
-            self.committed = False
-            self.added = []
-
-        async def execute(self, stmt):
-            del stmt
-            return FakeResult()
-
-        def add(self, item):
-            self.added.append(item)
-
-        async def flush(self):
-            self.order.append("flush")
-            for item in self.added:
-                if getattr(item, "id", None) is None:
-                    item.id = 10
-
-        async def commit(self):
-            self.order.append("commit")
-            self.committed = True
-
-        async def rollback(self):
-            raise AssertionError("rollback should not be called")
-
-    db = FakeDB()
-    captured = {}
-    created_run = SimpleNamespace(
-        id="",
-        thread_id="thread-1",
-        status="pending",
-        request_id="req-1",
-        uid="user-1",
-    )
-
-    class RunRepo:
-        def __init__(self, db_session):
-            self.db = db_session
-
-        async def get_run_by_request_id(self, request_id: str):
-            del request_id
-            return None
-
-        async def create_run(self, **kwargs):
-            assert kwargs["request_id"] == "req-1"
-            assert kwargs["conversation_id"] == 1
-            captured["input_payload"] = kwargs["input_payload"]
-            created_run.id = kwargs["run_id"]
-            return created_run
-
-        async def set_input_message(self, run_id: str, message_id: int):
-            assert run_id == created_run.id
-            assert message_id == 10
-            return created_run
-
-    class ConvRepo:
-        def __init__(self, db_session):
-            self.db = db_session
-
-        async def get_conversation_by_thread_id(self, thread_id: str):
-            del thread_id
-            return SimpleNamespace(id=1, uid="user-1", status="active", agent_id="default")
-
-    class AgentRepo:
-        def __init__(self, db_session):
-            self.db = db_session
-
-        async def get_visible_by_slug(self, slug: str, user):
-            del user
-            return SimpleNamespace(slug=slug, backend_id="ChatbotAgent")
-
-    class Queue:
-        async def enqueue_job(self, job_name: str, run_id: str, _job_id: str):
-            assert job_name == "process_agent_run"
-            assert run_id == created_run.id
-            assert _job_id == f"run:{created_run.id}"
-            db.order.append("enqueue")
-            assert db.committed is True
-
-    async def fake_get_arq_pool():
-        return Queue()
-
-    monkeypatch.setattr(agent_run_service.agent_manager, "get_agent", lambda backend_id: _FakeBackend())
-    monkeypatch.setattr(agent_run_service, "AgentRepository", AgentRepo)
-    monkeypatch.setattr(agent_run_service, "ConversationRepository", ConvRepo)
-    monkeypatch.setattr(agent_run_service, "AgentRunRepository", RunRepo)
-    monkeypatch.setattr(agent_run_service, "get_arq_pool", fake_get_arq_pool)
+    db = _patch_agent_run_creation(monkeypatch)
 
     result = await agent_run_service.create_agent_run_view(
-        query="hello",
-        agent_id="default",
+        input_message=_chat_input("hello"),
+        agent_slug="default",
         thread_id="thread-1",
         meta={"request_id": "req-1"},
-        image_content=None,
         current_uid="user-1",
         db=db,
     )
 
     assert db.order[-2:] == ["commit", "enqueue"]
-    assert result["run_id"] == created_run.id
+    assert result["run_id"] == db.created_run.id
     assert result["request_id"] == "req-1"
-    assert db.added[0].run_id == created_run.id
+    assert db.request_id_lookups == ["req-1"]
+    assert db.created_run_kwargs["request_id"] == "req-1"
+    assert db.created_run_kwargs["conversation_id"] == 1
+    assert db.created_run_kwargs["input_message_id"] == 10
+    assert db.added[0].run_id == db.created_run.id
     assert db.added[0].request_id == "req-1"
-    assert captured["input_payload"]["model_spec"] == "agent-default-model"
-    assert db.added[0].extra_metadata["model_spec"] == "agent-default-model"
+    assert db.enqueued == [("process_agent_run", db.created_run.id, f"run:{db.created_run.id}")]
+    assert db.created_run_kwargs["input_payload"] == {"model_spec": "agent-default-model"}
+    assert "model_spec" not in db.added[0].extra_metadata
+    assert db.added[0].extra_metadata["raw_message"]["type"] == "human"
+    assert db.added[0].extra_metadata["raw_message"]["content"] == "hello"
+    assert "run_id" not in db.added[0].extra_metadata
+    assert "run_type" not in db.added[0].extra_metadata
+
+
+@pytest.mark.asyncio
+async def test_create_agent_run_reuses_existing_only_with_same_request_scope(monkeypatch: pytest.MonkeyPatch):
+    existing_run = SimpleNamespace(
+        id="existing-run",
+        conversation_thread_id="thread-1",
+        agent_slug="default",
+        status="pending",
+        request_id="req-1",
+        uid="user-1",
+        run_type="chat",
+        created_by_run_id=None,
+        subagent_thread_relation_id=None,
+    )
+    db = _patch_agent_run_creation(monkeypatch, existing_run=existing_run)
+
+    result = await agent_run_service.create_agent_run_view(
+        input_message=_chat_input("hello"),
+        agent_slug="default",
+        thread_id="thread-1",
+        meta={"request_id": "req-1"},
+        current_uid="user-1",
+        db=db,
+    )
+
+    assert result["run_id"] == "existing-run"
+    assert db.active_run_lookup is None
+    assert db.created_run_kwargs is None
+
+
+@pytest.mark.asyncio
+async def test_create_agent_run_rejects_request_id_scope_mismatch(monkeypatch: pytest.MonkeyPatch):
+    existing_run = SimpleNamespace(
+        id="existing-run",
+        conversation_thread_id="other-thread",
+        agent_slug="default",
+        status="pending",
+        request_id="req-1",
+        uid="user-1",
+        run_type="chat",
+        created_by_run_id=None,
+        subagent_thread_relation_id=None,
+    )
+    db = _patch_agent_run_creation(monkeypatch, existing_run=existing_run)
+
+    with pytest.raises(agent_run_service.HTTPException) as exc:
+        await agent_run_service.create_agent_run_view(
+            input_message=_chat_input("hello"),
+            agent_slug="default",
+            thread_id="thread-1",
+            meta={"request_id": "req-1"},
+            current_uid="user-1",
+            db=db,
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail == "request_id 冲突"
+    assert db.created_run_kwargs is None
+
+
+@pytest.mark.asyncio
+async def test_create_agent_run_integrity_error_reuses_same_request_scope(monkeypatch: pytest.MonkeyPatch):
+    existing_run = SimpleNamespace(
+        id="existing-run",
+        conversation_thread_id="thread-1",
+        agent_slug="default",
+        status="pending",
+        request_id="req-1",
+        uid="user-1",
+        run_type="chat",
+        created_by_run_id=None,
+        subagent_thread_relation_id=None,
+    )
+    db = _patch_agent_run_creation(
+        monkeypatch,
+        existing_run_after_rollback=existing_run,
+        raise_create_integrity_error=True,
+    )
+
+    result = await agent_run_service.create_agent_run_view(
+        input_message=_chat_input("hello"),
+        agent_slug="default",
+        thread_id="thread-1",
+        meta={"request_id": "req-1"},
+        current_uid="user-1",
+        db=db,
+    )
+
+    assert result["run_id"] == "existing-run"
+    assert "rollback_savepoint" in db.order
+    assert "rollback" not in db.order
+    assert db.deleted == [db.added[0]]
+    assert "commit" not in db.order
+    assert "enqueue" not in db.order
+
+
+@pytest.mark.asyncio
+async def test_create_agent_run_integrity_error_rejects_scope_mismatch(monkeypatch: pytest.MonkeyPatch):
+    existing_run = SimpleNamespace(
+        id="existing-run",
+        conversation_thread_id="other-thread",
+        agent_slug="default",
+        status="pending",
+        request_id="req-1",
+        uid="user-1",
+        run_type="chat",
+        created_by_run_id=None,
+        subagent_thread_relation_id=None,
+    )
+    db = _patch_agent_run_creation(
+        monkeypatch,
+        existing_run_after_rollback=existing_run,
+        raise_create_integrity_error=True,
+    )
+
+    with pytest.raises(agent_run_service.HTTPException) as exc:
+        await agent_run_service.create_agent_run_view(
+            input_message=_chat_input("hello"),
+            agent_slug="default",
+            thread_id="thread-1",
+            meta={"request_id": "req-1"},
+            current_uid="user-1",
+            db=db,
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail == "request_id 冲突"
+    assert "rollback_savepoint" in db.order
+    assert "rollback" not in db.order
+    assert "commit" not in db.order
+
+
+@pytest.mark.asyncio
+async def test_create_agent_run_integrity_error_returns_run_busy_for_active_thread(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    db = _patch_agent_run_creation(
+        monkeypatch,
+        active_run_after_rollback=SimpleNamespace(id="active-run", status="pending"),
+        raise_create_integrity_error=True,
+    )
+
+    with pytest.raises(agent_run_service.HTTPException) as exc:
+        await agent_run_service.create_agent_run_view(
+            input_message=_chat_input("hello"),
+            agent_slug="default",
+            thread_id="thread-1",
+            meta={"request_id": "req-2"},
+            current_uid="user-1",
+            db=db,
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "run_busy"
+    assert exc.value.detail["active_run_id"] == "active-run"
+    assert db.request_id_lookups == ["req-2", "req-2"]
+    assert "rollback_savepoint" in db.order
+    assert "rollback" not in db.order
+    assert "commit" not in db.order
 
 
 @pytest.mark.asyncio
 async def test_create_resume_run_marks_input_message_source(monkeypatch: pytest.MonkeyPatch):
-    class FakeResult:
-        def scalar_one_or_none(self):
-            return SimpleNamespace(uid="user-1", role="user")
-
-    class FakeDB:
-        def __init__(self):
-            self.order: list[str] = []
-            self.committed = False
-            self.added = []
-
-        async def execute(self, stmt):
-            del stmt
-            return FakeResult()
-
-        def add(self, item):
-            self.added.append(item)
-
-        async def flush(self):
-            self.order.append("flush")
-            for item in self.added:
-                if getattr(item, "id", None) is None:
-                    item.id = 11
-
-        async def commit(self):
-            self.order.append("commit")
-            self.committed = True
-
-        async def rollback(self):
-            raise AssertionError("rollback should not be called")
-
-    db = FakeDB()
-    created_run = SimpleNamespace(
-        id="",
-        thread_id="thread-1",
-        status="pending",
-        request_id="resume-req",
-        uid="user-1",
+    db = _patch_agent_run_creation(
+        monkeypatch,
+        message_id=11,
+        parent_run=SimpleNamespace(
+            id="parent-run",
+            conversation_thread_id="thread-1",
+            status="interrupted",
+            input_payload={"model_spec": "parent-model"},
+        ),
     )
 
-    class RunRepo:
-        def __init__(self, db_session):
-            self.db = db_session
-
-        async def get_run_for_user(self, run_id: str, uid: str):
-            assert run_id == "parent-run"
-            assert uid == "user-1"
-            return SimpleNamespace(id=run_id, thread_id="thread-1", status="interrupted", input_payload={})
-
-        async def get_resume_run(self, parent_run_id: str, resume_request_id: str):
-            assert parent_run_id == "parent-run"
-            assert resume_request_id == "resume-req"
-            return None
-
-        async def get_run_by_request_id(self, request_id: str):
-            assert request_id == "resume-req"
-            return None
-
-        async def create_run(self, **kwargs):
-            assert kwargs["run_type"] == "resume"
-            assert kwargs["parent_run_id"] == "parent-run"
-            assert kwargs["resume_request_id"] == "resume-req"
-            created_run.id = kwargs["run_id"]
-            return created_run
-
-        async def set_input_message(self, run_id: str, message_id: int):
-            assert run_id == created_run.id
-            assert message_id == 11
-            return created_run
-
-    class ConvRepo:
-        def __init__(self, db_session):
-            self.db = db_session
-
-        async def get_conversation_by_thread_id(self, thread_id: str):
-            del thread_id
-            return SimpleNamespace(id=1, uid="user-1", status="active", agent_id="default")
-
-    class AgentRepo:
-        def __init__(self, db_session):
-            self.db = db_session
-
-        async def get_visible_by_slug(self, slug: str, user):
-            del user
-            return SimpleNamespace(slug=slug, backend_id="ChatbotAgent")
-
-    class Queue:
-        async def enqueue_job(self, job_name: str, run_id: str, _job_id: str):
-            assert job_name == "process_agent_run"
-            assert run_id == created_run.id
-            assert _job_id == f"run:{created_run.id}"
-            assert db.committed is True
-
-    async def fake_get_arq_pool():
-        return Queue()
-
-    monkeypatch.setattr(agent_run_service.agent_manager, "get_agent", lambda backend_id: _FakeBackend())
-    monkeypatch.setattr(agent_run_service, "AgentRepository", AgentRepo)
-    monkeypatch.setattr(agent_run_service, "ConversationRepository", ConvRepo)
-    monkeypatch.setattr(agent_run_service, "AgentRunRepository", RunRepo)
-    monkeypatch.setattr(agent_run_service, "get_arq_pool", fake_get_arq_pool)
-
     result = await agent_run_service.create_agent_run_view(
-        query=None,
-        agent_id="default",
+        input_message=None,
+        agent_slug="default",
         thread_id="thread-1",
         meta={"request_id": "resume-req"},
-        image_content=None,
         current_uid="user-1",
         db=db,
         resume={"language": "python"},
-        parent_run_id="parent-run",
-        resume_request_id="resume-req",
+        created_by_run_id="parent-run",
     )
 
-    assert result["run_id"] == created_run.id
+    assert result["run_id"] == db.created_run.id
+    assert db.created_run_kwargs["run_type"] == "resume"
+    assert db.created_run_kwargs["created_by_run_id"] == "parent-run"
+    assert db.created_run_kwargs["input_message_id"] == 11
     assert db.added[0].message_type == "resume"
     assert db.added[0].extra_metadata["source"] == "ask_user_question_resume"
 
 
 @pytest.mark.asyncio
-async def test_create_agent_run_core_can_skip_input_message_for_child_run(monkeypatch: pytest.MonkeyPatch):
-    captured = {}
-    created_run = SimpleNamespace(
-        id="",
-        thread_id="child-thread",
-        status="pending",
-        request_id="subagent-req",
-        uid="user-1",
+async def test_create_resume_run_requires_parent_run_id(monkeypatch: pytest.MonkeyPatch):
+    db = _patch_agent_run_creation(monkeypatch)
+
+    with pytest.raises(agent_run_service.HTTPException) as exc:
+        await agent_run_service.create_agent_run_view(
+            input_message=None,
+            agent_slug="default",
+            thread_id="thread-1",
+            meta={"request_id": "resume-req"},
+            current_uid="user-1",
+            db=db,
+            resume={"language": "python"},
+        )
+
+    assert exc.value.status_code == 422
+    assert exc.value.detail == "created_by_run_id 不能为空"
+    assert db.created_run_kwargs is None
+
+
+@pytest.mark.asyncio
+async def test_create_resume_run_rejects_non_interrupted_parent(monkeypatch: pytest.MonkeyPatch):
+    db = _patch_agent_run_creation(
+        monkeypatch,
+        parent_run=SimpleNamespace(
+            id="parent-run",
+            conversation_thread_id="thread-1",
+            status="running",
+            input_payload={"model_spec": "parent-model"},
+        ),
     )
 
-    class RunRepo:
-        def __init__(self, db_session):
-            del db_session
+    with pytest.raises(agent_run_service.HTTPException) as exc:
+        await agent_run_service.create_agent_run_view(
+            input_message=None,
+            agent_slug="default",
+            thread_id="thread-1",
+            meta={"request_id": "resume-req"},
+            current_uid="user-1",
+            db=db,
+            resume={"language": "python"},
+            created_by_run_id="parent-run",
+        )
 
-        async def get_run_by_request_id(self, request_id: str):
-            assert request_id == "subagent-req"
-            return None
+    assert exc.value.status_code == 409
+    assert exc.value.detail == "只有 interrupted run 可以恢复"
+    assert db.created_run_kwargs is None
 
-        async def create_run(self, **kwargs):
-            captured["create_run"] = kwargs
-            created_run.id = kwargs["run_id"]
-            return created_run
 
-        async def set_input_message(self, run_id: str, message_id: int):
-            del run_id, message_id
-            raise AssertionError("input message should not be persisted")
-
-    db = _patch_common_run_repos(monkeypatch, RunRepo)
-
-    run, created = await agent_run_service.create_agent_run(
-        query="delegate this",
-        agent_id="default",
-        thread_id="thread-1",
-        meta={"request_id": "subagent-req"},
-        image_content=None,
-        current_uid="user-1",
-        db=db,
-        run_type="subagent",
-        parent_agent_run_id="parent-agent-run",
-        checkpoint_thread_id="child-thread",
-        persist_input_message=False,
+@pytest.mark.asyncio
+async def test_create_resume_run_rejects_parent_without_model_snapshot(monkeypatch: pytest.MonkeyPatch):
+    db = _patch_agent_run_creation(
+        monkeypatch,
+        parent_run=SimpleNamespace(
+            id="parent-run",
+            conversation_thread_id="thread-1",
+            status="interrupted",
+            input_payload={},
+        ),
     )
 
-    assert created is True
-    assert run is created_run
-    assert db.added == []
-    assert captured["create_run"]["run_type"] == "subagent"
-    assert captured["create_run"]["parent_agent_run_id"] == "parent-agent-run"
-    assert captured["create_run"]["checkpoint_thread_id"] == "child-thread"
-    assert captured["create_run"]["input_payload"]["parent_agent_run_id"] == "parent-agent-run"
-    assert db.committed is True
+    with pytest.raises(agent_run_service.HTTPException) as exc:
+        await agent_run_service.create_agent_run_view(
+            input_message=None,
+            agent_slug="default",
+            thread_id="thread-1",
+            meta={"request_id": "resume-req"},
+            current_uid="user-1",
+            db=db,
+            resume={"language": "python"},
+            created_by_run_id="parent-run",
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail == "被恢复的运行任务缺少模型快照"
+    assert db.created_run_kwargs is None
+
+
+@pytest.mark.asyncio
+async def test_create_agent_run_rejects_active_checkpoint_run(monkeypatch: pytest.MonkeyPatch):
+    db = _patch_agent_run_creation(monkeypatch, active_run=SimpleNamespace(id="active-run", status="running"))
+
+    with pytest.raises(agent_run_service.HTTPException) as exc:
+        await agent_run_service.create_agent_run_view(
+            input_message=_chat_input("hello"),
+            agent_slug="default",
+            thread_id="thread-1",
+            meta={"request_id": "req-1"},
+            current_uid="user-1",
+            db=db,
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "run_busy"
+    assert exc.value.detail["active_run_id"] == "active-run"
+    assert db.active_run_lookup == {
+        "agent_slug": "default",
+        "conversation_thread_id": "thread-1",
+        "uid": "user-1",
+    }
+    assert db.created_run_kwargs is None
 
 
 # ==================== run 结果基础能力 ====================
@@ -669,8 +829,8 @@ async def test_get_agent_run_result_uses_output_message_id(monkeypatch: pytest.M
     run = SimpleNamespace(
         id="run-1",
         status="completed",
-        agent_id="default-chatbot",
-        thread_id="thread-1",
+        agent_slug="default-chatbot",
+        conversation_thread_id="thread-1",
         conversation_id=10,
         request_id="req-1",
         output_message_id=2,
@@ -764,8 +924,8 @@ async def test_await_agent_run_result_drains_stream_then_loads_result(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_request_cancel_agent_run_can_cascade_children(monkeypatch: pytest.MonkeyPatch):
-    parent_run = SimpleNamespace(id="parent-run", uid="user-1")
+async def test_cancel_agent_run_view_cascades_children(monkeypatch: pytest.MonkeyPatch):
+    parent_run = SimpleNamespace(id="parent-run", uid="user-1", to_dict=lambda: {"id": "parent-run"})
     child_runs = [SimpleNamespace(id="child-1"), SimpleNamespace(id="child-2")]
     requested: list[str] = []
     signals: list[str] = []
@@ -779,8 +939,8 @@ async def test_request_cancel_agent_run_can_cascade_children(monkeypatch: pytest
             assert uid == "user-1"
             return parent_run
 
-        async def list_active_child_runs_for_user(self, parent_agent_run_id: str, uid: str):
-            assert parent_agent_run_id == "parent-run"
+        async def list_active_child_runs_for_user(self, created_by_run_id: str, uid: str):
+            assert created_by_run_id == "parent-run"
             assert uid == "user-1"
             return child_runs
 
@@ -794,51 +954,36 @@ async def test_request_cancel_agent_run_can_cascade_children(monkeypatch: pytest
     monkeypatch.setattr(agent_run_service, "AgentRunRepository", RunRepo)
     monkeypatch.setattr(agent_run_service, "publish_cancel_signal", fake_publish_cancel_signal)
 
-    run = await agent_run_service.request_cancel_agent_run(
+    result = await agent_run_service.cancel_agent_run_view(
         run_id="parent-run",
         current_uid="user-1",
         db=object(),
-        cascade_children=True,
     )
 
-    assert run is parent_run
+    assert result["run"]["id"] == "parent-run"
     assert requested == ["child-1", "child-2", "parent-run"]
     assert signals == ["child-1", "child-2", "parent-run"]
 
 
-def test_validate_model_spec_returns_none_when_empty():
-    assert agent_run_service._validate_model_spec(None) is None
-    assert agent_run_service._validate_model_spec("") is None
-
-
-def test_validate_model_spec_rejects_unknown_model(monkeypatch: pytest.MonkeyPatch):
+def test_resolve_effective_model_spec_rejects_unknown_explicit_model(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(agent_run_service.model_cache, "get_model_info", lambda spec: None)
     with pytest.raises(agent_run_service.HTTPException) as exc:
-        agent_run_service._validate_model_spec("nope")
+        agent_run_service._resolve_effective_model_spec("nope", SimpleNamespace(config_json={}), _FakeBackend())
     assert exc.value.status_code == 422
 
 
-def test_validate_model_spec_rejects_non_chat_model(monkeypatch: pytest.MonkeyPatch):
+def test_resolve_effective_model_spec_rejects_non_chat_explicit_model(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         agent_run_service.model_cache,
         "get_model_info",
         lambda spec: SimpleNamespace(model_type="embedding"),
     )
     with pytest.raises(agent_run_service.HTTPException) as exc:
-        agent_run_service._validate_model_spec("embed-1")
+        agent_run_service._resolve_effective_model_spec("embed-1", SimpleNamespace(config_json={}), _FakeBackend())
     assert exc.value.status_code == 422
 
 
-def test_validate_model_spec_accepts_chat_model(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(
-        agent_run_service.model_cache,
-        "get_model_info",
-        lambda spec: SimpleNamespace(model_type="chat"),
-    )
-    assert agent_run_service._validate_model_spec("gpt-x") == "gpt-x"
-
-
-def test_validate_model_spec_strips_explicit_model(monkeypatch: pytest.MonkeyPatch):
+def test_resolve_effective_model_spec_strips_explicit_chat_model(monkeypatch: pytest.MonkeyPatch):
     seen = []
 
     def fake_get_model_info(spec):
@@ -847,42 +992,47 @@ def test_validate_model_spec_strips_explicit_model(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(agent_run_service.model_cache, "get_model_info", fake_get_model_info)
 
-    assert agent_run_service._validate_model_spec(" gpt-x ") == "gpt-x"
+    assert (
+        agent_run_service._resolve_effective_model_spec(
+            " gpt-x ",
+            SimpleNamespace(config_json={}),
+            _FakeBackend(),
+        )
+        == "gpt-x"
+    )
     assert seen == ["gpt-x"]
 
 
-def _patch_common_run_repos(
+def _patch_agent_run_creation(
     monkeypatch: pytest.MonkeyPatch,
-    run_repo_cls,
     *,
     agent_config_json: dict | None = None,
+    message_id: int = 10,
+    active_run: SimpleNamespace | None = None,
+    active_run_after_rollback: SimpleNamespace | None = None,
+    existing_run: SimpleNamespace | None = None,
+    existing_run_after_rollback: SimpleNamespace | None = None,
+    parent_run: SimpleNamespace | None = None,
+    raise_create_integrity_error: bool = False,
 ):
-    class FakeResult:
-        def scalar_one_or_none(self):
-            return SimpleNamespace(uid="user-1", role="user")
-
-    class FakeDB:
-        def __init__(self):
-            self.added = []
-            self.committed = False
-
-        async def execute(self, stmt):
-            del stmt
-            return FakeResult()
-
-        def add(self, item):
-            self.added.append(item)
-
-        async def flush(self):
-            for item in self.added:
-                if getattr(item, "id", None) is None:
-                    item.id = 10
-
-        async def commit(self):
-            self.committed = True
-
-        async def rollback(self):
-            raise AssertionError("rollback should not be called")
+    runs_by_id = {
+        "parent-agent-run": SimpleNamespace(
+            id="parent-agent-run",
+            conversation_id=99,
+            conversation_thread_id="parent-thread",
+        )
+    }
+    if parent_run:
+        runs_by_id["parent-run"] = parent_run
+    db = _CreateRunDb(
+        message_id=message_id,
+        active_run=active_run,
+        active_run_after_rollback=active_run_after_rollback,
+        existing_run=existing_run,
+        existing_run_after_rollback=existing_run_after_rollback,
+        runs_by_id=runs_by_id,
+        raise_create_integrity_error=raise_create_integrity_error,
+    )
 
     class ConvRepo:
         def __init__(self, db_session):
@@ -896,17 +1046,22 @@ def _patch_common_run_repos(
         def __init__(self, db_session):
             del db_session
 
-        async def get_visible_by_slug(self, slug: str, user):
+        async def get_visible_by_slug(self, *, slug: str, user, kind="main"):
             del user
+            is_subagent = kind == "subagent"
             return SimpleNamespace(
                 slug=slug,
+                name="Default",
                 backend_id="ChatbotAgent",
                 config_json=agent_config_json or {"context": {}},
+                is_subagent=is_subagent,
             )
 
     class Queue:
         async def enqueue_job(self, job_name: str, run_id: str, _job_id: str):
-            del job_name, run_id, _job_id
+            assert db.committed is True
+            db.order.append("enqueue")
+            db.enqueued.append((job_name, run_id, _job_id))
 
     async def fake_get_arq_pool():
         return Queue()
@@ -914,9 +1069,9 @@ def _patch_common_run_repos(
     monkeypatch.setattr(agent_run_service.agent_manager, "get_agent", lambda backend_id: _FakeBackend())
     monkeypatch.setattr(agent_run_service, "AgentRepository", AgentRepo)
     monkeypatch.setattr(agent_run_service, "ConversationRepository", ConvRepo)
-    monkeypatch.setattr(agent_run_service, "AgentRunRepository", run_repo_cls)
+    monkeypatch.setattr(agent_run_service, "AgentRunRepository", _CreateRunRepo)
     monkeypatch.setattr(agent_run_service, "get_arq_pool", fake_get_arq_pool)
-    return FakeDB()
+    return db
 
 
 @pytest.mark.asyncio
@@ -926,122 +1081,62 @@ async def test_create_chat_run_persists_validated_model_spec(monkeypatch: pytest
         "get_model_info",
         lambda spec: SimpleNamespace(model_type="chat"),
     )
-    captured = {}
-    created_run = SimpleNamespace(id="", thread_id="thread-1", status="pending", request_id="req-1", uid="user-1")
-
-    class RunRepo:
-        def __init__(self, db_session):
-            del db_session
-
-        async def get_run_by_request_id(self, request_id: str):
-            del request_id
-            return None
-
-        async def create_run(self, **kwargs):
-            captured["input_payload"] = kwargs["input_payload"]
-            created_run.id = kwargs["run_id"]
-            return created_run
-
-        async def set_input_message(self, run_id: str, message_id: int):
-            del run_id, message_id
-            return created_run
-
-    db = _patch_common_run_repos(monkeypatch, RunRepo)
+    db = _patch_agent_run_creation(monkeypatch)
 
     await agent_run_service.create_agent_run_view(
-        query="hello",
-        agent_id="default",
+        input_message=_chat_input("hello"),
+        agent_slug="default",
         thread_id="thread-1",
         meta={"request_id": "req-1"},
-        image_content=None,
         current_uid="user-1",
         db=db,
         model_spec="claude-x",
     )
 
-    assert captured["input_payload"]["model_spec"] == "claude-x"
+    assert db.created_run_kwargs["input_payload"]["model_spec"] == "claude-x"
 
 
 @pytest.mark.asyncio
 async def test_create_chat_run_with_image_persists_multimodal_message_type(monkeypatch: pytest.MonkeyPatch):
-    captured = {}
-    created_run = SimpleNamespace(id="", thread_id="thread-1", status="pending", request_id="req-1", uid="user-1")
-
-    class RunRepo:
-        def __init__(self, db_session):
-            del db_session
-
-        async def get_run_by_request_id(self, request_id: str):
-            del request_id
-            return None
-
-        async def create_run(self, **kwargs):
-            captured["input_payload"] = kwargs["input_payload"]
-            created_run.id = kwargs["run_id"]
-            return created_run
-
-        async def set_input_message(self, run_id: str, message_id: int):
-            del run_id, message_id
-            return created_run
-
-    db = _patch_common_run_repos(monkeypatch, RunRepo)
+    db = _patch_agent_run_creation(monkeypatch)
 
     await agent_run_service.create_agent_run_view(
-        query="看图",
-        agent_id="default",
+        input_message=_chat_input("看图", "base64-image"),
+        agent_slug="default",
         thread_id="thread-1",
         meta={"request_id": "req-1"},
-        image_content="base64-image",
         current_uid="user-1",
         db=db,
     )
 
-    assert captured["input_payload"]["image_content"] == "base64-image"
+    assert db.created_run_kwargs["input_payload"] == {"model_spec": "agent-default-model"}
     assert db.added[0].message_type == "multimodal_image"
     assert db.added[0].image_content == "base64-image"
+    raw_message = db.added[0].extra_metadata["raw_message"]
+    assert raw_message["type"] == "human"
+    assert raw_message["content"][0] == {"type": "text", "text": "看图"}
+    assert raw_message["content"][1]["image_url"]["url"] == "data:image/jpeg;base64,base64-image"
 
 
 @pytest.mark.asyncio
 async def test_create_chat_run_snapshots_agent_configured_model_spec(monkeypatch: pytest.MonkeyPatch):
-    captured = {}
-    created_run = SimpleNamespace(id="", thread_id="thread-1", status="pending", request_id="req-1", uid="user-1")
-
-    class RunRepo:
-        def __init__(self, db_session):
-            del db_session
-
-        async def get_run_by_request_id(self, request_id: str):
-            del request_id
-            return None
-
-        async def create_run(self, **kwargs):
-            captured["input_payload"] = kwargs["input_payload"]
-            created_run.id = kwargs["run_id"]
-            return created_run
-
-        async def set_input_message(self, run_id: str, message_id: int):
-            del run_id, message_id
-            return created_run
-
-    db = _patch_common_run_repos(
+    db = _patch_agent_run_creation(
         monkeypatch,
-        RunRepo,
         agent_config_json={"context": {"model": "agent-config-model"}},
     )
 
     await agent_run_service.create_agent_run_view(
-        query="hello",
-        agent_id="default",
+        input_message=_chat_input("hello"),
+        agent_slug="default",
         thread_id="thread-1",
         meta={"request_id": "req-1"},
-        image_content=None,
         current_uid="user-1",
         db=db,
         model_spec=None,
     )
 
-    assert captured["input_payload"]["model_spec"] == "agent-config-model"
-    assert db.added[0].extra_metadata["model_spec"] == "agent-config-model"
+    assert db.created_run_kwargs["input_payload"]["model_spec"] == "agent-config-model"
+    assert "model_spec" not in db.added[0].extra_metadata
 
 
 @pytest.mark.asyncio
@@ -1051,97 +1146,48 @@ async def test_create_chat_run_snapshots_system_default_when_agent_model_empty(m
         "resolve_chat_model_spec",
         lambda model_spec: str(model_spec).strip() if str(model_spec or "").strip() else "system-default-model",
     )
-    captured = {}
-    created_run = SimpleNamespace(id="", thread_id="thread-1", status="pending", request_id="req-1", uid="user-1")
-
-    class RunRepo:
-        def __init__(self, db_session):
-            del db_session
-
-        async def get_run_by_request_id(self, request_id: str):
-            del request_id
-            return None
-
-        async def create_run(self, **kwargs):
-            captured["input_payload"] = kwargs["input_payload"]
-            created_run.id = kwargs["run_id"]
-            return created_run
-
-        async def set_input_message(self, run_id: str, message_id: int):
-            del run_id, message_id
-            return created_run
-
-    db = _patch_common_run_repos(
+    db = _patch_agent_run_creation(
         monkeypatch,
-        RunRepo,
         agent_config_json={"context": {"model": ""}},
     )
 
     await agent_run_service.create_agent_run_view(
-        query="hello",
-        agent_id="default",
+        input_message=_chat_input("hello"),
+        agent_slug="default",
         thread_id="thread-1",
         meta={"request_id": "req-1"},
-        image_content=None,
         current_uid="user-1",
         db=db,
         model_spec=None,
     )
 
-    assert captured["input_payload"]["model_spec"] == "system-default-model"
-    assert db.added[0].extra_metadata["model_spec"] == "system-default-model"
+    assert db.created_run_kwargs["input_payload"]["model_spec"] == "system-default-model"
+    assert "model_spec" not in db.added[0].extra_metadata
 
 
 @pytest.mark.asyncio
 async def test_create_resume_run_inherits_parent_model_spec(monkeypatch: pytest.MonkeyPatch):
     # 即使 resume 入参传了别的模型，也必须沿用父运行的模型
-    captured = {}
-    created_run = SimpleNamespace(id="", thread_id="thread-1", status="pending", request_id="resume-req", uid="user-1")
-
-    class RunRepo:
-        def __init__(self, db_session):
-            del db_session
-
-        async def get_run_for_user(self, run_id: str, uid: str):
-            del uid
-            return SimpleNamespace(
-                id=run_id,
-                thread_id="thread-1",
-                status="interrupted",
-                input_payload={"model_spec": "parent-model"},
-            )
-
-        async def get_resume_run(self, parent_run_id: str, resume_request_id: str):
-            del parent_run_id, resume_request_id
-            return None
-
-        async def get_run_by_request_id(self, request_id: str):
-            del request_id
-            return None
-
-        async def create_run(self, **kwargs):
-            captured["input_payload"] = kwargs["input_payload"]
-            created_run.id = kwargs["run_id"]
-            return created_run
-
-        async def set_input_message(self, run_id: str, message_id: int):
-            del run_id, message_id
-            return created_run
-
-    db = _patch_common_run_repos(monkeypatch, RunRepo)
+    db = _patch_agent_run_creation(
+        monkeypatch,
+        parent_run=SimpleNamespace(
+            id="parent-run",
+            conversation_thread_id="thread-1",
+            status="interrupted",
+            input_payload={"model_spec": "parent-model"},
+        ),
+    )
 
     await agent_run_service.create_agent_run_view(
-        query=None,
-        agent_id="default",
+        input_message=None,
+        agent_slug="default",
         thread_id="thread-1",
         meta={"request_id": "resume-req"},
-        image_content=None,
         current_uid="user-1",
         db=db,
         model_spec="ignored-model",
         resume={"language": "python"},
-        parent_run_id="parent-run",
-        resume_request_id="resume-req",
+        created_by_run_id="parent-run",
     )
 
-    assert captured["input_payload"]["model_spec"] == "parent-model"
+    assert db.created_run_kwargs["input_payload"]["model_spec"] == "parent-model"

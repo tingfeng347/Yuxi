@@ -58,3 +58,4 @@ def test_command_without_tool_message_is_left_untouched():
     command = Command(update={"todos": [{"content": "无消息", "status": "pending"}]})
     data = {"event": "tool-finished", "tool_call_id": "call_x", "output": command}
     assert _normalize_tool_event_data(data)["output"] is command
+

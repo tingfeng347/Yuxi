@@ -8,13 +8,14 @@ from psycopg_pool import AsyncConnectionPool
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import declarative_base
-from yuxi.storage.postgres.models_business import Base as BusinessBase
+from yuxi.storage.postgres.models_business import AGENT_RUN_TERMINAL_STATUSES, Base as BusinessBase
 from yuxi.storage.postgres.models_knowledge import Base as KnowledgeBase
 from yuxi.utils import logger
 from yuxi.utils.singleton import SingletonMeta
 
 # 合并两个 Base
 CombinedBase = declarative_base()
+AGENT_RUN_TERMINAL_STATUS_SQL = ", ".join(f"'{status}'" for status in AGENT_RUN_TERMINAL_STATUSES)
 
 # 继承所有表
 for module in [KnowledgeBase, BusinessBase]:
@@ -456,17 +457,127 @@ class PostgresManager(metaclass=SingletonMeta):
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
             """,
-            "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS parent_agent_run_id VARCHAR(64)",
+            """
+            CREATE TABLE IF NOT EXISTS subagent_threads (
+                id SERIAL PRIMARY KEY,
+                uid VARCHAR(64) NOT NULL,
+                parent_conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                child_conversation_id INTEGER NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE,
+                child_thread_id VARCHAR(64) NOT NULL UNIQUE,
+                subagent_slug VARCHAR(64) NOT NULL,
+                created_by_run_id VARCHAR(64) NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            """,
+            "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS agent_slug VARCHAR(64)",
+            "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS conversation_thread_id VARCHAR(64)",
+            "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS created_by_run_id VARCHAR(64)",
+            "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS subagent_thread_relation_id INTEGER",
+            "ALTER TABLE IF EXISTS subagent_threads ADD COLUMN IF NOT EXISTS subagent_slug VARCHAR(64)",
+            "ALTER TABLE IF EXISTS subagent_threads ADD COLUMN IF NOT EXISTS created_by_run_id VARCHAR(64)",
+            """
+            UPDATE subagent_threads st
+            SET subagent_slug = c.agent_id
+            FROM conversations c
+            WHERE st.subagent_slug IS NULL
+              AND c.id = st.child_conversation_id
+              AND c.agent_id IS NOT NULL
+            """,
+            """
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_name = 'subagent_threads'
+                      AND column_name = 'created_by_parent_run_id'
+                ) THEN
+                    EXECUTE '
+                        UPDATE subagent_threads
+                        SET created_by_run_id = created_by_parent_run_id::VARCHAR
+                        WHERE created_by_run_id IS NULL
+                          AND created_by_parent_run_id IS NOT NULL
+                    ';
+                END IF;
+            END $$;
+            """,
+            """
+            UPDATE subagent_threads st
+            SET created_by_run_id = child_run.created_by_run_id
+            FROM (
+                SELECT DISTINCT ON (subagent_thread_relation_id)
+                    subagent_thread_relation_id,
+                    created_by_run_id
+                FROM agent_runs
+                WHERE run_type = 'subagent'
+                  AND subagent_thread_relation_id IS NOT NULL
+                  AND created_by_run_id IS NOT NULL
+                ORDER BY subagent_thread_relation_id, created_at ASC, id ASC
+            ) child_run
+            WHERE st.created_by_run_id IS NULL
+              AND child_run.subagent_thread_relation_id = st.id
+            """,
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM subagent_threads WHERE subagent_slug IS NULL) THEN
+                    ALTER TABLE subagent_threads ALTER COLUMN subagent_slug SET NOT NULL;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM subagent_threads WHERE created_by_run_id IS NULL) THEN
+                    ALTER TABLE subagent_threads ALTER COLUMN created_by_run_id SET NOT NULL;
+                END IF;
+            END $$;
+            """,
+            "ALTER TABLE IF EXISTS agent_runs DROP COLUMN IF EXISTS agent_id",
+            "ALTER TABLE IF EXISTS agent_runs DROP COLUMN IF EXISTS thread_id",
+            "ALTER TABLE IF EXISTS agent_runs DROP COLUMN IF EXISTS parent_run_id",
+            "ALTER TABLE IF EXISTS agent_runs DROP COLUMN IF EXISTS parent_agent_run_id",
+            "ALTER TABLE IF EXISTS agent_runs DROP COLUMN IF EXISTS resumed_from_run_id",
+            "ALTER TABLE IF EXISTS agent_runs DROP COLUMN IF EXISTS invoked_by_run_id",
+            "ALTER TABLE IF EXISTS agent_runs DROP COLUMN IF EXISTS subagent_thread_id",
+            "ALTER TABLE IF EXISTS agent_runs DROP COLUMN IF EXISTS resume_request_id",
+            "ALTER TABLE IF EXISTS agent_runs DROP COLUMN IF EXISTS resume_idempotency_key",
+            "ALTER TABLE IF EXISTS agent_runs DROP COLUMN IF EXISTS checkpoint_thread_id",
+            "ALTER TABLE IF EXISTS agent_runs DROP COLUMN IF EXISTS execution_scope_id",
+            "ALTER TABLE IF EXISTS subagent_threads DROP COLUMN IF EXISTS subagent_agent_id",
+            "ALTER TABLE IF EXISTS subagent_threads DROP COLUMN IF EXISTS created_by_parent_run_id",
+            "ALTER TABLE IF EXISTS subagent_threads DROP COLUMN IF EXISTS created_by_tool_call_id",
             "CREATE INDEX IF NOT EXISTS idx_agent_runs_uid_created ON agent_runs(uid, created_at DESC)",
-            "CREATE INDEX IF NOT EXISTS idx_agent_runs_thread_created ON agent_runs(thread_id, created_at DESC)",
+            """
+            CREATE INDEX IF NOT EXISTS idx_agent_runs_conversation_thread_created
+            ON agent_runs(conversation_thread_id, created_at DESC)
+            """,
             "CREATE INDEX IF NOT EXISTS idx_agent_runs_status_updated ON agent_runs(status, updated_at)",
             """
-            CREATE INDEX IF NOT EXISTS idx_agent_runs_parent_agent_run_created
-            ON agent_runs(parent_agent_run_id, created_at DESC)
+            CREATE INDEX IF NOT EXISTS ix_agent_runs_subagent_thread_relation_id
+            ON agent_runs(subagent_thread_relation_id)
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_subagent_threads_uid ON subagent_threads(uid)",
+            """
+            CREATE INDEX IF NOT EXISTS ix_subagent_threads_parent_conversation
+            ON subagent_threads(parent_conversation_id)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS ix_subagent_threads_subagent_slug
+            ON subagent_threads(subagent_slug)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS ix_subagent_threads_created_by_run_id
+            ON subagent_threads(created_by_run_id)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_agent_runs_created_by_run_created
+            ON agent_runs(created_by_run_id, created_at DESC)
             """,
             """
             CREATE INDEX IF NOT EXISTS idx_agent_runs_subagent_lookup
-            ON agent_runs(uid, thread_id, run_type, created_at DESC)
+            ON agent_runs(uid, conversation_thread_id, run_type, created_at DESC)
+            """,
+            f"""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_runs_one_active_per_thread
+            ON agent_runs(uid, agent_slug, conversation_thread_id)
+            WHERE status NOT IN ({AGENT_RUN_TERMINAL_STATUS_SQL})
             """,
             "CREATE INDEX IF NOT EXISTS ix_conversations_is_pinned ON conversations(is_pinned)",
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_model_providers_provider_id ON model_providers(provider_id)",

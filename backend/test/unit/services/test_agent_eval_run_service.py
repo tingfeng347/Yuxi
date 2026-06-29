@@ -24,9 +24,10 @@ async def test_run_agent_eval_creates_conversation_and_returns_result(monkeypatc
         def __init__(self, db):
             self.db = db
 
-        async def get_visible_by_slug(self, *, slug: str, user):
+        async def get_visible_by_slug(self, *, slug: str, user, kind="main"):
             assert slug == "default-chatbot"
             assert user is current_user
+            assert kind == "main"
             return SimpleNamespace(slug=slug, backend_id="ChatbotAgent")
 
     class ConvRepo:
@@ -95,6 +96,9 @@ async def test_run_agent_eval_creates_conversation_and_returns_result(monkeypatc
         "evaluation": expected_eval,
         "attachment_file_ids": ["file-1"],
     }
+    assert calls["run_kwargs"]["input_message"].content == "2+2=?"
+    assert "query" not in calls["run_kwargs"]
+    assert "image_content" not in calls["run_kwargs"]
     assert calls["await_kwargs"] == {"run_id": "run-1", "current_uid": "user-1"}
     assert result == {
         "status": "completed",

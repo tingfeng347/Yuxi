@@ -42,7 +42,11 @@
 import { computed, ref, watch, inject } from 'vue'
 import { ChevronDown, ChevronRight, Atom } from 'lucide-vue-next'
 import { ToolCallRenderer } from '@/components/ToolCallingResult'
-import { getToolCallId, normalizeToolCalls } from '@/components/ToolCallingResult/toolRegistry'
+import {
+  getToolCallId,
+  isSubagentToolCall,
+  normalizeToolCalls
+} from '@/components/ToolCallingResult/toolRegistry'
 
 const activeSubagentToolCallIds = inject('activeSubagentToolCallIds', null)
 
@@ -50,7 +54,8 @@ const activeSubagentToolCallIds = inject('activeSubagentToolCallIds', null)
 const toolRunState = (toolCall) => {
   if (toolCall.status === 'error') return 'error'
   if (toolCall.tool_call_result || toolCall.status === 'success') return 'completed'
-  if (getToolCallId(toolCall) === 'task') {
+  if (isSubagentToolCall(toolCall)) {
+    if (getToolCallId(toolCall) !== 'task') return 'running'
     return activeSubagentToolCallIds?.value?.has(String(toolCall.id)) ? 'running' : 'completed'
   }
   return 'running'

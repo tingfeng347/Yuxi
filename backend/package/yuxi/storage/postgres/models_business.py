@@ -23,6 +23,7 @@ Base = declarative_base()
 
 MAX_LOGIN_FAILED_ATTEMPTS = 5
 LOGIN_LOCK_DURATION_SECONDS = 300
+AGENT_RUN_TERMINAL_STATUSES = ("completed", "failed", "cancelled", "interrupted")
 
 
 class Department(Base):
@@ -256,7 +257,8 @@ class Conversation(Base):
     id = Column(Integer, primary_key=True, autoincrement=True, comment="Primary key")
     thread_id = Column(String(64), unique=True, index=True, nullable=False, comment="Thread ID (UUID)")
     uid = Column(String(64), index=True, nullable=False, comment="UID")
-    agent_id = Column(String(64), index=True, nullable=False, comment="Agent ID")
+    # 历史字段名，实际保存的是 Agent.slug。
+    agent_id = Column(String(64), index=True, nullable=False, comment="Agent slug (legacy column name: agent_id)")
     title = Column(String(255), nullable=True, comment="Conversation title")
     status = Column(String(20), default="active", comment="Status: active/archived/deleted")
     is_pinned = Column(Boolean, default=False, nullable=False, index=True, comment="Is pinned to top")
@@ -283,6 +285,44 @@ class Conversation(Base):
             "created_at": format_utc_datetime(self.created_at),
             "updated_at": format_utc_datetime(self.updated_at),
             "metadata": metadata,
+        }
+
+
+class SubagentThread(Base):
+    """SubagentThread table - 子智能体长期线程归属关系表"""
+
+    __tablename__ = "subagent_threads"
+
+    id = Column(Integer, primary_key=True, autoincrement=True, comment="Primary key")
+    uid = Column(String(64), index=True, nullable=False, comment="UID")
+    parent_conversation_id = Column(
+        Integer, ForeignKey("conversations.id"), nullable=False, index=True, comment="Parent conversation ID"
+    )
+    child_conversation_id = Column(
+        Integer,
+        ForeignKey("conversations.id"),
+        nullable=False,
+        unique=True,
+        index=True,
+        comment="Child conversation ID",
+    )
+    child_thread_id = Column(String(64), nullable=False, unique=True, index=True, comment="Child thread ID")
+    subagent_slug = Column(String(64), nullable=False, index=True, comment="Subagent slug")
+    created_by_run_id = Column(String(64), nullable=False, index=True, comment="Run that created this subagent thread")
+    created_at = Column(DateTime, default=utc_now_naive, comment="Creation time")
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive, comment="Update time")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "uid": self.uid,
+            "parent_conversation_id": self.parent_conversation_id,
+            "child_conversation_id": self.child_conversation_id,
+            "child_thread_id": self.child_thread_id,
+            "subagent_slug": self.subagent_slug,
+            "created_by_run_id": self.created_by_run_id,
+            "created_at": format_utc_datetime(self.created_at),
+            "updated_at": format_utc_datetime(self.updated_at),
         }
 
 
@@ -751,8 +791,8 @@ class AgentRun(Base):
     __tablename__ = "agent_runs"
 
     id = Column(String(64), primary_key=True, comment="Run ID (UUID)")
-    thread_id = Column(String(64), index=True, nullable=False, comment="Thread ID")
-    agent_id = Column(String(64), index=True, nullable=False, comment="Agent ID")
+    conversation_thread_id = Column(String(64), index=True, nullable=False, comment="Conversation thread ID snapshot")
+    agent_slug = Column(String(64), index=True, nullable=False, comment="Agent slug")
     uid = Column(String(64), index=True, nullable=False, comment="UID")
     status = Column(
         String(32),
@@ -765,13 +805,22 @@ class AgentRun(Base):
     conversation_id = Column(
         Integer, ForeignKey("conversations.id"), nullable=True, index=True, comment="Conversation ID"
     )
-    parent_run_id = Column(String(64), nullable=True, index=True, comment="Parent interrupted run ID")
-    parent_agent_run_id = Column(String(64), nullable=True, index=True, comment="Parent agent run ID")
-    run_type = Column(String(32), nullable=False, default="chat", comment="Run type: chat/resume/subagent")
-    resume_request_id = Column(String(64), nullable=True, index=True, comment="Resume idempotency request ID")
+    created_by_run_id = Column(String(64), nullable=True, index=True, comment="Run that created this run")
+    subagent_thread_relation_id = Column(
+        Integer,
+        ForeignKey("subagent_threads.id"),
+        nullable=True,
+        index=True,
+        comment="Subagent thread relation record ID",
+    )
+    run_type = Column(
+        String(32),
+        nullable=False,
+        default="chat",
+        comment="Run type: chat/resume/subagent",
+    )
     input_message_id = Column(Integer, nullable=True, comment="Input message ID")
     output_message_id = Column(Integer, nullable=True, comment="Output message ID")
-    checkpoint_thread_id = Column(String(64), nullable=True, comment="LangGraph checkpoint thread ID")
     last_event_id = Column(String(64), nullable=True, comment="Last Redis stream event ID")
     input_payload = Column(JSON, nullable=False, default=dict, comment="Original input payload")
     error_type = Column(String(64), nullable=True, comment="Error type")
@@ -784,19 +833,17 @@ class AgentRun(Base):
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
-            "thread_id": self.thread_id,
-            "agent_id": self.agent_id,
+            "conversation_thread_id": self.conversation_thread_id,
+            "agent_slug": self.agent_slug,
             "uid": self.uid,
             "status": self.status,
             "request_id": self.request_id,
             "conversation_id": self.conversation_id,
-            "parent_run_id": self.parent_run_id,
-            "parent_agent_run_id": self.parent_agent_run_id,
+            "created_by_run_id": self.created_by_run_id,
+            "subagent_thread_relation_id": self.subagent_thread_relation_id,
             "run_type": self.run_type,
-            "resume_request_id": self.resume_request_id,
             "input_message_id": self.input_message_id,
             "output_message_id": self.output_message_id,
-            "checkpoint_thread_id": self.checkpoint_thread_id,
             "last_event_id": self.last_event_id,
             "input_payload": self.input_payload or {},
             "error_type": self.error_type,
@@ -806,3 +853,14 @@ class AgentRun(Base):
             "created_at": format_utc_datetime(self.created_at),
             "updated_at": format_utc_datetime(self.updated_at),
         }
+
+
+Index(
+    "uq_agent_runs_one_active_per_thread",
+    AgentRun.uid,
+    AgentRun.agent_slug,
+    AgentRun.conversation_thread_id,
+    unique=True,
+    postgresql_where=AgentRun.status.notin_(AGENT_RUN_TERMINAL_STATUSES),
+    sqlite_where=AgentRun.status.notin_(AGENT_RUN_TERMINAL_STATUSES),
+)

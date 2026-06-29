@@ -14,9 +14,9 @@ async def resolve_agent_runtime_context(
     *,
     db: AsyncSession,
     user: User,
-    bound_agent_id: str,
+    agent_slug: str,
 ) -> BaseContext:
-    agent_item = await AgentRepository(db).get_visible_by_slug(slug=bound_agent_id, user=user)
+    agent_item = await AgentRepository(db).get_visible_by_slug(slug=agent_slug, user=user)
     if not agent_item:
         raise HTTPException(status_code=404, detail="智能体不存在")
 
@@ -48,7 +48,7 @@ async def resolve_thread_agent_runtime_context(
     runtime_context = await resolve_agent_runtime_context(
         db=db,
         user=user,
-        bound_agent_id=conversation.agent_id,
+        agent_slug=conversation.agent_id,
     )
     runtime_context.thread_id = thread_id
     runtime_context.uid = str(user.uid)

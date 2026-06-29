@@ -406,7 +406,7 @@ def _materialize_tmp_attachment_files(
 
 async def create_thread_view(
     *,
-    agent_id: str,
+    agent_slug: str,
     title: str | None,
     metadata: dict | None,
     db: AsyncSession,
@@ -418,7 +418,7 @@ async def create_thread_view(
         raise HTTPException(status_code=404, detail="用户不存在")
 
     agent_repo = AgentRepository(db)
-    agent_item = await agent_repo.get_visible_by_slug(slug=agent_id, user=current_user)
+    agent_item = await agent_repo.get_visible_by_slug(slug=agent_slug, user=current_user)
     if not agent_item:
         raise HTTPException(status_code=404, detail="智能体不存在")
 
@@ -447,7 +447,7 @@ async def create_thread_view(
 
 async def list_threads_view(
     *,
-    agent_id: str | None,
+    agent_slug: str | None,
     db: AsyncSession,
     current_uid: str,
     limit: int | None = None,
@@ -456,7 +456,7 @@ async def list_threads_view(
     conv_repo = ConversationRepository(db)
     conversations = await conv_repo.list_conversations(
         uid=str(current_uid),
-        agent_id=agent_id,
+        agent_id=agent_slug,
         status="active",
         limit=limit,
         offset=offset,

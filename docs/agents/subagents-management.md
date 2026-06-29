@@ -72,7 +72,7 @@ Yuxi 的子智能体是 Agent-backed 形态：它仍然是 `agents` 表中的一
 ```python
 class TaskToolSchema(BaseModel):
     description: str
-    subagent_type: str
+    subagent_slug: str
     thread_id: str | None = None
 ```
 

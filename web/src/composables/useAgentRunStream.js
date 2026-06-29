@@ -154,7 +154,7 @@ export function useAgentRunStream({
   const hasPendingInterruptForRun = (threadState, runId) => {
     const pendingInterrupt = threadState?.pendingInterrupt
     if (!pendingInterrupt?.questions?.length) return false
-    return !pendingInterrupt.parentRunId || pendingInterrupt.parentRunId === runId
+    return !pendingInterrupt.interruptedRunId || pendingInterrupt.interruptedRunId === runId
   }
 
   const hasPendingInterruptInThreads = (threadIds, runId) => {

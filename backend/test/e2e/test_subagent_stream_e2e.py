@@ -35,6 +35,13 @@ async def _delete_agent(client: httpx.AsyncClient, headers: dict[str, str], slug
     assert response.status_code in {200, 404}, response.text
 
 
+async def _cancel_run(client: httpx.AsyncClient, headers: dict[str, str], run_id: str | None) -> None:
+    if not run_id:
+        return
+    response = await client.post(f"/api/agent/runs/{run_id}/cancel", headers=headers)
+    assert response.status_code < 500, response.text
+
+
 async def _create_thread(client: httpx.AsyncClient, headers: dict[str, str], agent_id: str, marker: str) -> str:
     response = await client.post(
         "/api/chat/thread",
@@ -52,7 +59,7 @@ async def _create_run(
     client: httpx.AsyncClient,
     headers: dict[str, str],
     *,
-    agent_id: str,
+    agent_slug: str,
     thread_id: str,
     query: str,
 ) -> str:
@@ -60,7 +67,7 @@ async def _create_run(
         "/api/agent/runs",
         json={
             "query": query,
-            "agent_id": agent_id,
+            "agent_slug": agent_slug,
             "thread_id": thread_id,
             "meta": {"request_id": f"subagent-stream-e2e-{uuid.uuid4()}"},
         },
@@ -191,6 +198,8 @@ async def test_subagent_stream_records_run_and_shares_output_files(
     output_path = "/home/gem/user-data/outputs/subagents.txt"
     expected_content = "由这个子智能体创建"
     created_agents: list[str] = []
+    run_id: str | None = None
+    run_completed = False
 
     default_response = await e2e_client.get("/api/agent/default", headers=e2e_headers)
     _assert_ok(default_response)
@@ -273,7 +282,7 @@ async def test_subagent_stream_records_run_and_shares_output_files(
         run_id = await _create_run(
             e2e_client,
             e2e_headers,
-            agent_id=main_slug,
+            agent_slug=main_slug,
             thread_id=thread_id,
             query=query,
         )
@@ -295,7 +304,7 @@ async def test_subagent_stream_records_run_and_shares_output_files(
         subagent_runs = final_agent_state.get("subagent_runs") or []
         assert subagent_runs, final_agent_state
         completed_run = next((item for item in subagent_runs if item.get("status") == "completed"), subagent_runs[0])
-        assert completed_run.get("subagent_type") == sub_slug
+        assert completed_run.get("subagent_slug") == sub_slug
         assert completed_run.get("subagent_name") == sub_agent["name"]
         assert completed_run.get("child_thread_id")
         assert completed_run.get("id")
@@ -319,8 +328,8 @@ async def test_subagent_stream_records_run_and_shares_output_files(
         _assert_ok(child_run_response)
         child_run = child_run_response.json().get("run") or {}
         assert child_run.get("run_type") == "subagent"
-        assert child_run.get("thread_id") == child_thread_id
-        assert child_run.get("parent_agent_run_id") == run_id
+        assert child_run.get("conversation_thread_id") == child_thread_id
+        assert child_run.get("created_by_run_id") == run_id
         assert child_run.get("status") == "completed"
         assert child_state_payload.get("messages"), child_state_payload
 
@@ -366,7 +375,10 @@ async def test_subagent_stream_records_run_and_shares_output_files(
         )
         _assert_ok(viewer_file_response)
         assert expected_content in json.dumps(viewer_file_response.json(), ensure_ascii=False)
+        run_completed = True
 
     finally:
+        if not run_completed:
+            await _cancel_run(e2e_client, e2e_headers, run_id)
         for slug in reversed(created_agents):
             await _delete_agent(e2e_client, e2e_headers, slug)
