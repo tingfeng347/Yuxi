@@ -30,7 +30,7 @@ const resolveChunkThreadId = ({ envelope, payload, chunk, fallbackThreadId }) =>
   )
 }
 
-const processRunSseResponse = async (response, onEvent) => {
+export const processRunSseResponse = async (response, onEvent) => {
   if (!response || !response.body) return
   const reader = response.body.getReader()
   const decoder = new TextDecoder()

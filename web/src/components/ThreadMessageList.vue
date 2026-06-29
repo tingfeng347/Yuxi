@@ -1,15 +1,23 @@
 <template>
   <div class="thread-message-list">
     <template v-for="(conv, convIndex) in conversations" :key="`conv-${convIndex}`">
-      <template v-for="displayItem in getDisplayItems(conv)" :key="displayItem.key">
+      <template
+        v-for="(displayItem, itemIndex) in displayItemsList[convIndex]"
+        :key="displayItem.key"
+      >
         <AgentMessageComponent
           v-if="displayItem.type === 'message'"
           :message="displayItem.message"
+          :is-processing="isDisplayMessageProcessing(conv, displayItem)"
           :show-refs="false"
           :hide-tool-calls="true"
           :mention="{}"
         />
-        <ToolCallsGroupComponent v-else :tool-calls="displayItem.toolCalls" />
+        <ToolCallsGroupComponent
+          v-else
+          :tool-calls="displayItem.toolCalls"
+          :is-active="isToolGroupActive(conv, itemIndex, displayItemsList[convIndex])"
+        />
       </template>
     </template>
     <div v-if="conversations.length === 0" class="thread-message-list-empty">暂无消息</div>
@@ -28,20 +36,55 @@ const props = defineProps({
     type: Array,
     default: () => []
   },
+  ongoingMessages: {
+    type: Array,
+    default: () => []
+  },
+  isProcessing: {
+    type: Boolean,
+    default: false
+  },
   enrichToolCalls: {
     type: Function,
     default: null
   }
 })
 
-const conversations = computed(() =>
+const historyConversations = computed(() =>
   MessageProcessor.convertServerHistoryToMessages(props.messages)
 )
 
-const getDisplayItems = (conv) =>
-  getConversationDisplayItems(
-    conv,
-    props.enrichToolCalls ? { enrichToolCalls: props.enrichToolCalls } : {}
+const conversations = computed(() => {
+  if (!props.ongoingMessages.length) return historyConversations.value
+  return [
+    ...historyConversations.value,
+    {
+      messages: props.ongoingMessages,
+      status: 'streaming'
+    }
+  ]
+})
+
+const displayItemsList = computed(() =>
+  conversations.value.map((conv) =>
+    getConversationDisplayItems(
+      conv,
+      props.enrichToolCalls ? { enrichToolCalls: props.enrichToolCalls } : {}
+    )
+  )
+)
+
+const isDisplayMessageProcessing = (conv, displayItem) =>
+  Boolean(
+    props.isProcessing &&
+      displayItem?.type === 'message' &&
+      conv?.status === 'streaming' &&
+      displayItem.sourceIndex === conv.messages.length - 1
+  )
+
+const isToolGroupActive = (conv, itemIndex, displayItems) =>
+  Boolean(
+    props.isProcessing && conv?.status === 'streaming' && itemIndex === displayItems.length - 1
   )
 </script>
 

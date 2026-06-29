@@ -548,9 +548,12 @@
     <SubagentThreadModal
       v-model:open="subagentThreadModal.open"
       :child-thread-id="subagentThreadModal.childThreadId"
+      :run-id="activeSubagentThreadRunId"
       :subagent-name="activeSubagentThreadName"
       :subagent-avatar="activeSubagentThreadAvatar"
       :subagent-default-avatar="activeSubagentThreadDefaultAvatar"
+      :ongoing-messages="activeSubagentThreadOngoingMessages"
+      :is-streaming="activeSubagentThreadIsStreaming"
     />
   </div>
 </template>
@@ -1218,6 +1221,7 @@ const currentSubagentOptionBySlug = computed(() => {
 const subagentThreadModal = reactive({
   open: false,
   childThreadId: '',
+  runId: '',
   subagentName: '',
   subagentAvatar: '',
   subagentDefaultAvatar: ''
@@ -1225,6 +1229,7 @@ const subagentThreadModal = reactive({
 const openSubagentThread = (run) => {
   if (!run?.child_thread_id) return
   subagentThreadModal.childThreadId = String(run.child_thread_id)
+  subagentThreadModal.runId = run.run_id ? String(run.run_id) : ''
   subagentThreadModal.subagentName = getSubagentRunName(run)
   subagentThreadModal.subagentAvatar = getSubagentIconSrc(run)
   subagentThreadModal.subagentDefaultAvatar = getSubagentDefaultIconSrc(run)
@@ -1510,6 +1515,11 @@ const activeSubagentThreadName = computed(() =>
     ? getSubagentRunName(activeSubagentThreadRun.value)
     : subagentThreadModal.subagentName
 )
+const activeSubagentThreadRunId = computed(() =>
+  activeSubagentThreadRun.value?.run_id
+    ? String(activeSubagentThreadRun.value.run_id)
+    : subagentThreadModal.runId
+)
 const activeSubagentThreadAvatar = computed(() =>
   activeSubagentThreadRun.value
     ? getSubagentIconSrc(activeSubagentThreadRun.value) || subagentThreadModal.subagentAvatar
@@ -1520,6 +1530,15 @@ const activeSubagentThreadDefaultAvatar = computed(() =>
     ? getSubagentDefaultIconSrc(activeSubagentThreadRun.value) ||
       subagentThreadModal.subagentDefaultAvatar
     : subagentThreadModal.subagentDefaultAvatar
+)
+const activeSubagentThreadOngoingMessages = computed(() => {
+  if (!subagentThreadModal.childThreadId) return []
+  return getThreadOngoingMessages(subagentThreadModal.childThreadId)
+})
+const activeSubagentThreadIsStreaming = computed(
+  () =>
+    activeSubagentThreadOngoingMessages.value.length > 0 ||
+    activeSubagentThreadRun.value?.status === 'running'
 )
 
 // 首次运行的子智能体：前端按后端同样的哈希推算 child_thread_id，缓存到映射里供面板/轨迹定位。
@@ -1555,9 +1574,18 @@ function getMessageRequestId(message) {
   const metadataRequestId = message?.extra_metadata?.request_id
   if (typeof metadataRequestId === 'string' && metadataRequestId.trim())
     return metadataRequestId.trim()
+  if (typeof message?.request_id === 'string' && message.request_id.trim())
+    return message.request_id.trim()
   if (message?.type === 'human' && typeof message.id === 'string' && message.id.trim()) {
     return message.id.trim()
   }
+  return null
+}
+
+function getMessageRunId(message) {
+  const metadataRunId = message?.extra_metadata?.run_id
+  if (typeof metadataRunId === 'string' && metadataRunId.trim()) return metadataRunId.trim()
+  if (typeof message?.run_id === 'string' && message.run_id.trim()) return message.run_id.trim()
   return null
 }
 
@@ -1608,20 +1636,67 @@ function mergeOngoingUserMessageIntoHistory(historyConvs, ongoingMessages) {
   return { historyConvs: patchedHistoryConvs, ongoingMessages: ongoingMessages.slice(1) }
 }
 
+function mergeActiveRunOngoingIntoHistory(historyConvs, ongoingMessages, activeRunId) {
+  if (!activeRunId || !Array.isArray(historyConvs) || !Array.isArray(ongoingMessages)) {
+    return { historyConvs, ongoingMessages }
+  }
+  if (!ongoingMessages.length) return { historyConvs, ongoingMessages }
+
+  const filteredHistoryConvs = historyConvs
+    .map((conv) => ({
+      ...conv,
+      messages: (conv.messages || []).filter(
+        (message) => !(message?.type === 'ai' && getMessageRunId(message) === activeRunId)
+      )
+    }))
+    .filter((conv) => conv.messages.length > 0)
+
+  const firstOngoingMessage = ongoingMessages[0]
+  if (firstOngoingMessage?.type === 'human' || filteredHistoryConvs.length === 0) {
+    return { historyConvs: filteredHistoryConvs, ongoingMessages }
+  }
+
+  const lastHistoryConv = filteredHistoryConvs[filteredHistoryConvs.length - 1]
+  const lastMessages = Array.isArray(lastHistoryConv.messages) ? lastHistoryConv.messages : []
+  const lastHuman = lastMessages.find((message) => message?.type === 'human')
+  if (!lastHuman) return { historyConvs: filteredHistoryConvs, ongoingMessages }
+
+  const historyRequestId = getMessageRequestId(lastHuman)
+  const ongoingRequestId = getMessageRequestId(firstOngoingMessage)
+  const sameActiveRun =
+    getMessageRunId(lastHuman) === activeRunId ||
+    (Boolean(historyRequestId) && Boolean(ongoingRequestId) && ongoingRequestId === historyRequestId)
+  if (!sameActiveRun) return { historyConvs: filteredHistoryConvs, ongoingMessages }
+
+  const patchedHistoryConvs = [...filteredHistoryConvs]
+  patchedHistoryConvs[patchedHistoryConvs.length - 1] = {
+    ...lastHistoryConv,
+    messages: [...lastMessages, ...ongoingMessages],
+    status: 'streaming'
+  }
+  return { historyConvs: patchedHistoryConvs, ongoingMessages: [] }
+}
+
 const conversations = computed(() => {
   const historyConvs = historyConversations.value
   const { historyConvs: mergedHistoryConvs, ongoingMessages: mergedOngoingMessages } =
     mergeOngoingUserMessageIntoHistory(historyConvs, onGoingConvMessages.value)
+  const { historyConvs: activeRunHistoryConvs, ongoingMessages: activeRunOngoingMessages } =
+    mergeActiveRunOngoingIntoHistory(
+      mergedHistoryConvs,
+      mergedOngoingMessages,
+      currentThreadState.value?.activeRunId || null
+    )
 
   // 如果有进行中的消息且线程状态显示正在流式处理，添加进行中的对话
-  if (mergedOngoingMessages.length > 0) {
+  if (activeRunOngoingMessages.length > 0) {
     const onGoingConv = {
-      messages: mergedOngoingMessages,
+      messages: activeRunOngoingMessages,
       status: 'streaming'
     }
-    return [...mergedHistoryConvs, onGoingConv]
+    return [...activeRunHistoryConvs, onGoingConv]
   }
-  return mergedHistoryConvs
+  return activeRunHistoryConvs
 })
 
 const conversationRows = computed(() => {

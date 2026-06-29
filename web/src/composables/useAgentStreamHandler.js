@@ -131,6 +131,14 @@ export function useAgentStreamHandler({
         {
           const messageChunk = loadingMessageChunk(chunk)
           if (messageChunk?.id) {
+            messageChunk.run_id = chunk.run_id || messageChunk.run_id
+            messageChunk.thread_id = threadId || messageChunk.thread_id
+            messageChunk.extra_metadata = {
+              ...(messageChunk.extra_metadata || {}),
+              ...(chunk.run_id ? { run_id: chunk.run_id } : {}),
+              ...(chunk.request_id ? { request_id: chunk.request_id } : {}),
+              ...(threadId ? { thread_id: threadId } : {})
+            }
             if (streamSmoother) {
               streamSmoother.pushChunk(messageChunk, threadId)
             } else {

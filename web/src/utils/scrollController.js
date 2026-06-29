@@ -27,7 +27,13 @@ export class ScrollController {
    * @returns {Element|null}
    */
   getContainer() {
-    return document.querySelector(this.containerSelector)
+    if (typeof this.containerSelector === 'function') {
+      return this.containerSelector()
+    }
+    if (typeof this.containerSelector === 'string') {
+      return document.querySelector(this.containerSelector)
+    }
+    return this.containerSelector || null
   }
 
   /**
