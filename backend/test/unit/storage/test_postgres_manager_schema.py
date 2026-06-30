@@ -49,10 +49,45 @@ async def test_ensure_business_schema_backfills_subagent_thread_columns_before_d
 
     statements = "\n".join(connection.statements)
 
+    assert "SET agent_slug = agent_id" in statements
+    assert "SET conversation_thread_id = thread_id" in statements
+    assert "SET created_by_run_id = COALESCE(parent_agent_run_id, parent_run_id)" in statements
     assert "SET subagent_slug = c.agent_id" in statements
     assert "SET created_by_run_id = created_by_parent_run_id::VARCHAR" in statements
     assert "ALTER COLUMN subagent_slug SET NOT NULL" in statements
     assert "ALTER COLUMN created_by_run_id SET NOT NULL" in statements
+    assert statements.index("SET agent_slug = agent_id") < statements.index("DROP COLUMN IF EXISTS agent_id")
+    assert statements.index("SET conversation_thread_id = thread_id") < statements.index(
+        "DROP COLUMN IF EXISTS thread_id"
+    )
+    assert statements.index("COALESCE(parent_agent_run_id, parent_run_id)") < statements.index(
+        "DROP COLUMN IF EXISTS parent_agent_run_id"
+    )
     assert statements.index("created_by_parent_run_id") < statements.index(
         "DROP COLUMN IF EXISTS created_by_parent_run_id"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ensure_business_schema_cleans_duplicate_active_agent_runs_before_unique_index():
+    manager = PostgresManager()
+    original_initialized = manager._initialized
+    original_engine = manager.async_engine
+    connection = _RecordingConnection()
+
+    manager._initialized = True
+    manager.async_engine = _RecordingEngine(connection)
+    try:
+        await manager.ensure_business_schema()
+    finally:
+        manager._initialized = original_initialized
+        manager.async_engine = original_engine
+
+    statements = "\n".join(connection.statements)
+
+    assert "WITH duplicated_active_runs AS" in statements
+    assert "active_run_migration_conflict" in statements
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_runs_one_active_per_thread" in statements
+    assert statements.index("WITH duplicated_active_runs AS") < statements.index(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_runs_one_active_per_thread"
     )

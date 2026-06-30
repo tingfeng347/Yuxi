@@ -477,6 +477,88 @@ class PostgresManager(metaclass=SingletonMeta):
             "ALTER TABLE IF EXISTS subagent_threads ADD COLUMN IF NOT EXISTS subagent_slug VARCHAR(64)",
             "ALTER TABLE IF EXISTS subagent_threads ADD COLUMN IF NOT EXISTS created_by_run_id VARCHAR(64)",
             """
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_name = 'agent_runs'
+                      AND column_name = 'agent_id'
+                ) THEN
+                    EXECUTE '
+                        UPDATE agent_runs
+                        SET agent_slug = agent_id
+                        WHERE agent_slug IS NULL
+                          AND agent_id IS NOT NULL
+                    ';
+                END IF;
+
+                IF EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_name = 'agent_runs'
+                      AND column_name = 'thread_id'
+                ) THEN
+                    EXECUTE '
+                        UPDATE agent_runs
+                        SET conversation_thread_id = thread_id
+                        WHERE conversation_thread_id IS NULL
+                          AND thread_id IS NOT NULL
+                    ';
+                END IF;
+
+                IF EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_name = 'agent_runs'
+                      AND column_name = 'parent_agent_run_id'
+                ) OR EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_name = 'agent_runs'
+                      AND column_name = 'parent_run_id'
+                ) THEN
+                    IF EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_name = 'agent_runs'
+                          AND column_name = 'parent_agent_run_id'
+                    ) AND EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_name = 'agent_runs'
+                          AND column_name = 'parent_run_id'
+                    ) THEN
+                        EXECUTE '
+                            UPDATE agent_runs
+                            SET created_by_run_id = COALESCE(parent_agent_run_id, parent_run_id)
+                            WHERE created_by_run_id IS NULL
+                              AND COALESCE(parent_agent_run_id, parent_run_id) IS NOT NULL
+                        ';
+                    ELSIF EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_name = 'agent_runs'
+                          AND column_name = 'parent_agent_run_id'
+                    ) THEN
+                        EXECUTE '
+                            UPDATE agent_runs
+                            SET created_by_run_id = parent_agent_run_id
+                            WHERE created_by_run_id IS NULL
+                              AND parent_agent_run_id IS NOT NULL
+                        ';
+                    ELSE
+                        EXECUTE '
+                            UPDATE agent_runs
+                            SET created_by_run_id = parent_run_id
+                            WHERE created_by_run_id IS NULL
+                              AND parent_run_id IS NOT NULL
+                        ';
+                    END IF;
+                END IF;
+            END $$;
+            """,
+            """
             UPDATE subagent_threads st
             SET subagent_slug = c.agent_id
             FROM conversations c
@@ -573,6 +655,33 @@ class PostgresManager(metaclass=SingletonMeta):
             """
             CREATE INDEX IF NOT EXISTS idx_agent_runs_subagent_lookup
             ON agent_runs(uid, conversation_thread_id, run_type, created_at DESC)
+            """,
+            f"""
+            WITH duplicated_active_runs AS (
+                SELECT
+                    id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY uid, agent_slug, conversation_thread_id
+                        ORDER BY created_at DESC NULLS LAST, id DESC
+                    ) AS active_rank
+                FROM agent_runs
+                WHERE status NOT IN ({AGENT_RUN_TERMINAL_STATUS_SQL})
+                  AND uid IS NOT NULL
+                  AND agent_slug IS NOT NULL
+                  AND conversation_thread_id IS NOT NULL
+            )
+            UPDATE agent_runs ar
+            SET status = 'failed',
+                error_type = COALESCE(ar.error_type, 'active_run_migration_conflict'),
+                error_message = COALESCE(
+                    ar.error_message,
+                    '旧库存在同一用户、智能体和线程的重复活跃 AgentRun，迁移时已保留最新一条并终结本记录。'
+                ),
+                finished_at = COALESCE(ar.finished_at, NOW()),
+                updated_at = NOW()
+            FROM duplicated_active_runs dup
+            WHERE ar.id = dup.id
+              AND dup.active_rank > 1
             """,
             f"""
             CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_runs_one_active_per_thread
