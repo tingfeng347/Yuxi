@@ -65,7 +65,9 @@
                   </span>
                 </span>
               </button>
-              <div v-if="hasMore" class="file-search-loading-more">仅展示前 {{ results.length }} 条，请细化关键词</div>
+              <div v-if="hasMore" class="file-search-loading-more">
+                仅展示前 {{ results.length }} 条，请细化关键词
+              </div>
             </div>
 
             <div v-else class="file-search-empty">未找到匹配的文件</div>
@@ -105,6 +107,7 @@ const hasSearched = ref(false)
 const hasMore = ref(false)
 
 const resetState = () => {
+  searchToken++
   keyword.value = ''
   results.value = []
   loading.value = false
@@ -119,9 +122,12 @@ const selectResult = (item) => {
   close()
 }
 
+let searchToken = 0
+
 const handleSearch = async () => {
   const query = keyword.value.trim()
   if (!query || !props.kbId) return
+  const token = ++searchToken
   loading.value = true
   hasSearched.value = true
   try {
@@ -130,14 +136,16 @@ const handleSearch = async () => {
       offset: 0,
       limit: SEARCH_LIMIT
     })
+    if (token !== searchToken) return
     results.value = response?.files || []
     hasMore.value = Boolean(response?.has_more)
   } catch (error) {
+    if (token !== searchToken) return
     console.warn('搜索文件失败:', error)
     results.value = []
     hasMore.value = false
   } finally {
-    loading.value = false
+    if (token === searchToken) loading.value = false
   }
 }
 

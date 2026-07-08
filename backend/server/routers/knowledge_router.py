@@ -647,13 +647,10 @@ async def search_documents(
     current_user: User = Depends(get_admin_user),
 ):
     """按文件名搜索知识库文件（仅匹配文件名，不搜索文件内容）。"""
-    await _ensure_database_supports_documents(kb_id, "文档搜索")
+    database = await _ensure_database_supports_documents(kb_id, "文档搜索")
     normalized_query = (query or "").strip()
     if not normalized_query:
         return {"files": [], "total": 0, "offset": 0, "limit": limit, "has_more": False}
-    database = await knowledge_base.get_accessible_database_info_by_uid(current_user.uid, kb_id)
-    if not database:
-        raise HTTPException(status_code=404, detail=f"知识库 {kb_id} 不存在")
     return await knowledge_base.search_document_files(
         [database],
         query=normalized_query,

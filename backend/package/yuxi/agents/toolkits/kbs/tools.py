@@ -1,10 +1,16 @@
 """知识库工具模块"""
 
+from pathlib import Path
 from typing import Any
 
 from langgraph.prebuilt.tool_node import ToolRuntime
 from pydantic import BaseModel, Field
 
+from yuxi.agents.backends.sandbox.paths import (
+    ensure_thread_dirs,
+    sandbox_outputs_dir,
+    virtual_path_for_thread_file,
+)
 from yuxi.agents.toolkits.registry import tool
 from yuxi.knowledge.schemas import (
     FindInputSchema,
@@ -22,15 +28,24 @@ def _get_knowledge_base():
 def get_common_kb_tools() -> list:
     """获取通用知识库工具列表
 
-    返回 6 个通用工具：
+    返回 7 个通用工具：
     - list_kbs: 列出用户可访问的知识库
     - get_mindmap: 获取指定知识库的思维导图
     - query_kb: 在指定知识库中检索
     - find_kb_document: 在指定文件内定位关键词或正则模式
     - open_kb_document: 按 file_id 分段打开知识库文档
     - search_file: 搜索知识库中的文件
+    - download_kb_file: 按 file_id 下载知识库原始文件到沙盒 outputs
     """
-    return [list_kbs, get_mindmap, query_kb, find_kb_document, open_kb_document, search_file]
+    return [
+        list_kbs,
+        get_mindmap,
+        query_kb,
+        find_kb_document,
+        open_kb_document,
+        search_file,
+        download_kb_file,
+    ]
 
 
 class ListKBsInput(BaseModel):
@@ -313,6 +328,73 @@ async def search_file(
     )
 
 
+class DownloadKBFileInput(BaseModel):
+    """下载知识库原始文件输入模型"""
+
+    kb_id: str = Field(description="知识库资源 ID")
+    file_id: str = Field(description="知识库文件 ID，来自 query_kb 或 search_file 的返回结果")
+    save_as: str | None = Field(
+        default=None,
+        description="落盘文件名；为空时使用原始文件名。仅取文件名部分，不可包含目录",
+    )
+
+
+@tool(category="knowledge", tags=["知识库"], args_schema=DownloadKBFileInput)
+async def download_kb_file(
+    kb_id: str,
+    file_id: str,
+    save_as: str | None = None,
+    runtime: ToolRuntime = None,
+) -> dict[str, Any] | str:
+    """下载知识库文件的原始二进制（pdf/docx/xlsx 等）到沙盒 outputs 目录。
+
+    当后续需要对原始文件结构做处理时使用：例如用 openpyxl/pandas 读取 xlsx 单元格、
+    用 pdfplumber/python-docx 重新解析版面。query_kb/open_kb_document 只返回文本切片，
+    无法满足这类需要文件对象的场景。返回的 virtual_path 是沙盒内可见路径，可直接在代码中读取。
+    kb_id 是知识库资源 ID；file_id 来自 query_kb 或 search_file 的返回结果。
+    """
+    normalized_kb_id = str(kb_id or "").strip()
+    normalized_file_id = str(file_id or "").strip()
+    if not normalized_kb_id:
+        return "请提供 kb_id"
+    if not normalized_file_id:
+        return "请提供 file_id"
+
+    visible_kbs = await _resolve_visible_knowledge_bases_for_query(runtime)
+    target_kb_id, target_error = _find_query_target(kb_id=normalized_kb_id, visible_kbs=visible_kbs)
+    if target_error:
+        return target_error
+
+    knowledge_base = _get_knowledge_base()
+    try:
+        data = await knowledge_base.get_file_download(target_kb_id, normalized_file_id, variant="original")
+    except ValueError as e:
+        return str(e)
+    except Exception as e:
+        logger.error(f"下载知识库原始文件失败: {e}")
+        return f"下载知识库原始文件失败: {str(e)}"
+
+    file_thread_id = _runtime_thread_id(runtime)
+    uid = _runtime_uid(runtime)
+    if not file_thread_id or not uid:
+        return "无法获取当前会话的沙盒上下文，缺少 file_thread_id 或 uid"
+
+    output_path = _resolve_download_output_path(file_thread_id, uid, data, normalized_file_id, save_as)
+    try:
+        output_path.write_bytes(data["content"])
+    except OSError as e:
+        logger.error(f"写入沙盒 outputs 失败: {e}")
+        return f"写入沙盒 outputs 失败: {str(e)}"
+
+    return {
+        "virtual_path": virtual_path_for_thread_file(file_thread_id, output_path, uid=uid),
+        "filename": data["filename"] or normalized_file_id,
+        "media_type": data["media_type"],
+        "size_bytes": len(data["content"]),
+        "saved_as": output_path.name,
+    }
+
+
 # ========== 共享 helper（细节层） ==========
 
 
@@ -357,3 +439,48 @@ def _find_query_target(
     if normalized_kb_id not in visible_kb_ids:
         return None, f"知识库资源 '{normalized_kb_id}' 不存在或当前会话未启用"
     return normalized_kb_id, None
+
+
+def _runtime_thread_id(runtime: ToolRuntime | None) -> str | None:
+    """从 runtime.context 取 file_thread_id（回退 thread_id）。"""
+    context = getattr(runtime, "context", None) if runtime else None
+    if context is None:
+        return None
+    return getattr(context, "file_thread_id", None) or getattr(context, "thread_id", None)
+
+
+def _runtime_uid(runtime: ToolRuntime | None) -> str | None:
+    """从 runtime.context 取 uid。"""
+    context = getattr(runtime, "context", None) if runtime else None
+    if context is None:
+        return None
+    return getattr(context, "uid", None)
+
+
+def _resolve_download_output_path(
+    file_thread_id: str,
+    uid: str,
+    data: dict[str, Any],
+    file_id: str,
+    save_as: str | None,
+) -> Path:
+    """计算沙盒 outputs 目录下的落盘路径，处理重名与路径穿越防护。"""
+    ensure_thread_dirs(file_thread_id, uid)
+    outputs_dir = sandbox_outputs_dir(file_thread_id)
+
+    # 仅取文件名部分，剥离任何目录，防止路径穿越
+    wanted_name = (save_as or data.get("filename") or file_id).strip()
+    base_name = Path(wanted_name).name or file_id
+
+    candidate = outputs_dir / base_name
+    if not candidate.exists():
+        return candidate
+
+    # 重名时追加 _1 / _2 ... 后缀
+    stem = candidate.stem
+    suffix = candidate.suffix
+    index = 1
+    while candidate.exists():
+        candidate = outputs_dir / f"{stem}_{index}{suffix}"
+        index += 1
+    return candidate

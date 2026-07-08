@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 from types import MethodType, SimpleNamespace
 
 import pytest
@@ -599,3 +600,217 @@ async def test_search_file_total_reflects_full_set_not_page(monkeypatch) -> None
     assert result["total"] == 50
     assert len(result["files"]) == 10
     assert result["has_more"] is True
+
+
+# ========== download_kb_file ==========
+
+
+def _patch_download_manager(monkeypatch, *, kb_type: str = "milvus", file_download=None):
+    """复用 _patch_retrievers 的 _require_kb_supports_documents 真实逻辑，并绑定真实
+    get_file_download，仅 mock _get_kb_for_database 与底层 kb 实例的下载方法——这样
+    manager 内部的只读源校验路径会被真正走到，而非被整方法替换绕过。"""
+    manager = _patch_retrievers(monkeypatch, kb_type=kb_type)
+    manager.get_file_download = MethodType(KnowledgeBaseManager.get_file_download, manager)
+
+    async def _fake_get_kb_for_database(kb_id: str):
+        del kb_id
+        return SimpleNamespace(
+            get_file_download=file_download or _async_get_file_download(b"", "file")
+        )
+
+    manager._get_kb_for_database = _fake_get_kb_for_database
+    return manager
+
+
+def _download_kb_file_callable():
+    return _tool_callable(tools.download_kb_file)
+
+
+async def _run_download_kb_file(**kwargs):
+    return await _run_tool(_download_kb_file_callable(), **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_download_kb_file_writes_original_to_outputs_and_returns_virtual_path(
+    monkeypatch, tmp_path
+) -> None:
+    captured: dict = {}
+
+    def _fake_resolve_output_path(file_thread_id, uid, data, file_id, save_as):
+        captured["file_thread_id"] = file_thread_id
+        captured["uid"] = uid
+        captured["data"] = data
+        captured["save_as"] = save_as
+        return tmp_path / "report.pdf"
+
+    monkeypatch.setattr(tools, "_resolve_visible_knowledge_bases_for_query", _fake_visible_kbs)
+    _patch_download_manager(
+        monkeypatch,
+        file_download=_async_get_file_download(b"%PDF-1.4 bytes", "report.pdf"),
+    )
+    monkeypatch.setattr(tools, "_resolve_download_output_path", _fake_resolve_output_path)
+    monkeypatch.setattr(
+        tools,
+        "virtual_path_for_thread_file",
+        lambda thread_id, path, *, uid: f"/home/gem/user-data/outputs/{Path(path).name}",
+    )
+
+    runtime = SimpleNamespace(
+        context=SimpleNamespace(file_thread_id="thread-1", uid="user-1")
+    )
+    result = await _run_download_kb_file(
+        kb_id="db-1", file_id="file-1", runtime=runtime
+    )
+
+    assert (tmp_path / "report.pdf").read_bytes() == b"%PDF-1.4 bytes"
+    assert captured["file_thread_id"] == "thread-1"
+    assert captured["save_as"] is None
+    assert result == {
+        "virtual_path": "/home/gem/user-data/outputs/report.pdf",
+        "filename": "report.pdf",
+        "media_type": "application/octet-stream",
+        "size_bytes": len(b"%PDF-1.4 bytes"),
+        "saved_as": "report.pdf",
+    }
+
+
+@pytest.mark.asyncio
+async def test_download_kb_file_passes_save_as_argument(monkeypatch, tmp_path) -> None:
+    captured: dict = {}
+
+    def _fake_resolve_output_path(file_thread_id, uid, data, file_id, save_as):
+        captured["save_as"] = save_as
+        return tmp_path / "renamed.xlsx"
+
+    monkeypatch.setattr(tools, "_resolve_visible_knowledge_bases_for_query", _fake_visible_kbs)
+    _patch_download_manager(
+        monkeypatch,
+        file_download=_async_get_file_download(b"xlsx bytes", "origin.xlsx"),
+    )
+    monkeypatch.setattr(tools, "_resolve_download_output_path", _fake_resolve_output_path)
+    monkeypatch.setattr(
+        tools,
+        "virtual_path_for_thread_file",
+        lambda thread_id, path, *, uid: f"/home/gem/user-data/outputs/{Path(path).name}",
+    )
+
+    runtime = SimpleNamespace(
+        context=SimpleNamespace(file_thread_id="thread-1", uid="user-1")
+    )
+    result = await _run_download_kb_file(
+        kb_id="db-1", file_id="file-1", save_as="renamed.xlsx", runtime=runtime
+    )
+
+    assert captured["save_as"] == "renamed.xlsx"
+    assert result["saved_as"] == "renamed.xlsx"
+
+
+@pytest.mark.asyncio
+async def test_download_kb_file_rejects_invisible_resource(monkeypatch) -> None:
+    async def _visible_kbs(runtime):
+        del runtime
+        return [{"kb_id": "db-2", "name": "Other"}]
+
+    monkeypatch.setattr(tools, "_resolve_visible_knowledge_bases_for_query", _visible_kbs)
+
+    runtime = SimpleNamespace(context=SimpleNamespace())
+    result = await _run_download_kb_file(
+        kb_id="db-1", file_id="file-1", runtime=runtime
+    )
+
+    assert "不存在或当前会话未启用" in result
+
+
+@pytest.mark.asyncio
+async def test_download_kb_file_rejects_readonly_knowledge_base(monkeypatch) -> None:
+    """dify 等只读源不支持下载原文件，manager.get_file_download 内部应在校验阶段
+    抛 ValueError，使底层下载方法不被调用，工具层转换为清晰提示。"""
+    monkeypatch.setattr(tools, "_resolve_visible_knowledge_bases_for_query", _fake_visible_kbs)
+
+    not_called = {"flag": False}
+
+    async def _must_not_download(*args, **kwargs):
+        not_called["flag"] = True
+        raise AssertionError("只读知识库不应调用 get_file_download")
+
+    _patch_download_manager(monkeypatch, kb_type="dify", file_download=_must_not_download)
+
+    runtime = SimpleNamespace(context=SimpleNamespace(file_thread_id="thread-1", uid="user-1"))
+    result = await _run_download_kb_file(
+        kb_id="db-1", file_id="file-1", runtime=runtime
+    )
+
+    assert not_called["flag"] is False
+    assert "只支持检索" in result
+
+
+@pytest.mark.asyncio
+async def test_download_kb_file_requires_kb_and_file_id(monkeypatch) -> None:
+    monkeypatch.setattr(tools, "_resolve_visible_knowledge_bases_for_query", _fake_visible_kbs)
+    runtime = SimpleNamespace(context=SimpleNamespace())
+
+    assert "请提供 kb_id" in await _run_download_kb_file(
+        kb_id="", file_id="file-1", runtime=runtime
+    )
+    assert "请提供 file_id" in await _run_download_kb_file(
+        kb_id="db-1", file_id="", runtime=runtime
+    )
+
+
+@pytest.mark.asyncio
+async def test_download_kb_file_missing_sandbox_context_returns_error(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(tools, "_resolve_visible_knowledge_bases_for_query", _fake_visible_kbs)
+    _patch_download_manager(
+        monkeypatch,
+        file_download=_async_get_file_download(b"bytes", "report.pdf"),
+    )
+
+    runtime = SimpleNamespace(context=SimpleNamespace())
+    result = await _run_download_kb_file(
+        kb_id="db-1", file_id="file-1", runtime=runtime
+    )
+
+    assert "沙盒上下文" in result
+
+
+def test_resolve_download_output_path_strips_directory_and_avoids_traversal(monkeypatch, tmp_path) -> None:
+    """save_as 含目录或路径穿越时，必须被剥离成纯文件名并落在 outputs 下。"""
+    monkeypatch.setattr(tools, "ensure_thread_dirs", lambda *a, **k: None)
+    monkeypatch.setattr(tools, "sandbox_outputs_dir", lambda thread_id: tmp_path)
+
+    data = {"filename": "report.pdf"}
+    path = tools._resolve_download_output_path(
+        "thread-1", "user-1", data, "file-1", "../../../etc/passwd"
+    )
+
+    assert path.parent == tmp_path
+    # 纯文件名，不含目录分隔，且未逃出 outputs 目录
+    assert path.name == "passwd"
+    assert "/" not in path.name
+
+
+def test_resolve_download_output_path_appends_suffix_on_conflict(monkeypatch, tmp_path) -> None:
+    """目标文件名已存在时，追加 _1 / _2 后缀直到不冲突。"""
+    monkeypatch.setattr(tools, "ensure_thread_dirs", lambda *a, **k: None)
+    monkeypatch.setattr(tools, "sandbox_outputs_dir", lambda thread_id: tmp_path)
+
+    (tmp_path / "report.pdf").write_bytes(b"existing")
+    (tmp_path / "report_1.pdf").write_bytes(b"existing")
+
+    data = {"filename": "report.pdf"}
+    path = tools._resolve_download_output_path("thread-1", "user-1", data, "file-1", None)
+
+    assert path.name == "report_2.pdf"
+    assert not path.exists()
+
+
+def _async_get_file_download(content: bytes, filename: str):
+    async def _impl(kb_id: str, file_id: str, variant: str = "original"):
+        del kb_id, file_id, variant
+        return {
+            "filename": filename,
+            "content": content,
+            "media_type": "application/octet-stream",
+        }
+
+    return _impl

@@ -5,7 +5,8 @@
 同一版本的多次功能更新时，应以功能为单位进行更新，比如之前添加了 A 功能的更新，在后续的更新中修复了因 A 功能引入的 bug，那么这个修复说明应该和 A 功能描述放在一起，而不是新增一条修复记录，功能更新同理。
 ## v0.7.2 (current)
 
-- 新增知识库 external API 与 `yuxi kb` 查询类命令：后端在 `/api/knowledge/databases/external/*` 下暴露列库、文件搜索、检索、打开和文件内查找接口，统一走认证身份校验；CLI 新增 `yuxi kb list/files/query/open/find`，补充后端 external API 集成测试与 CLI client/命令测试。管理端同步新增 `GET /api/knowledge/databases/{kb_id}/documents/search`，复用底层文件名搜索能力供前端调用；知识库详情页工具栏新增「搜索文件」按钮，打开命令面板式弹窗（与历史对话搜索弹窗同风格），输入关键词按文件名搜索并在结果列表展示状态/大小/更新时间，placeholder 明确标注仅匹配文件名、不搜索文件内容，点击结果可直接打开文件详情。
+- 新增知识库 external API 与 `yuxi kb` 查询类命令：后端在 `/api/knowledge/databases/external/*` 下暴露列库、文件搜索、检索、打开和文件内查找接口，统一走认证身份校验；CLI 新增 `yuxi kb list/files/query/open/find`，补充后端 external API 集成测试与 CLI client/命令测试。管理端同步新增 `GET /api/knowledge/databases/{kb_id}/documents/search`，复用底层文件名搜索能力供前端调用；知识库详情页工具栏新增「搜索文件」按钮，打开命令面板式弹窗（与历史对话搜索弹窗同风格），输入关键词按文件名搜索并在结果列表展示状态/大小/更新时间，placeholder 明确标注仅匹配文件名、不搜索文件内容，点击结果可直接打开文件详情。搜索请求增加序号校验，连续回车与快速重搜时丢弃过期响应，避免后发先至覆盖当前关键词结果。
+- 新增 `download_kb_file` 知识库工具：通过 `file_id` 调用 `knowledge_base.get_file_download(variant="original")` 从 MinIO 拉取原始二进制（pdf/docx/xlsx 等），落盘到沙盒 `outputs` 目录并返回沙盒内可见的虚拟路径，供后续代码工具以文件对象方式读取（`openpyxl.load_workbook`、`pdfplumber.open` 等），弥补 `query_kb`/`open_kb_document` 只返回文本切片、丢失原始文件结构的不足。复用会话可见知识库校验与 `ocr_parse_file` 的落盘范式，支持 `save_as` 指定文件名（剥离目录防穿越，重名追加 `_N` 后缀），工具只搬运不解析、不自动登记交付物。工具已登记到 knowledge-base 内置 Skill 的 `tool_dependencies`，并在 SKILL.md 可用工具段补充说明；只读源拦截下沉到 `manager.get_file_download` 内部，与 `open_document`/`find_in_document` 落点一致，工具/router/CLI 所有调用方统一获得 dify 等只读检索源的拦截；返回的 `size_bytes` 与落盘统一用下标访问 `data["content"]`，避免回退掩盖契约异常。
 
 ## v0.7.1 (2026-07-17)
 

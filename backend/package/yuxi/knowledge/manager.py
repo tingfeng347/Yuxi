@@ -825,6 +825,7 @@ class KnowledgeBaseManager:
         return await kb_instance.read_file_preview(kb_id, file_id)
 
     async def get_file_download(self, kb_id: str, file_id: str, variant: str = "original") -> dict:
+        self._require_kb_supports_documents(kb_id, "Download")
         kb_instance = await self._get_kb_for_database(kb_id)
         return await kb_instance.get_file_download(kb_id, file_id, variant)
 

@@ -116,7 +116,9 @@ export const documentApi = {
 
   searchDocuments: async (kbId, params = {}) => {
     const query = buildQuery(params)
-    return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/search${query ? `?${query}` : ''}`)
+    return apiAdminGet(
+      `/api/knowledge/databases/${kbId}/documents/search${query ? `?${query}` : ''}`
+    )
   },
 
   /**
