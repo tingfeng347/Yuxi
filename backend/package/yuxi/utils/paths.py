@@ -5,7 +5,11 @@ from yuxi import config
 VIRTUAL_PATH_PREFIX = config.sandbox_virtual_path_prefix
 WORKSPACE_DIR_NAME = "workspace"
 WORKSPACE_AGENTS_DIR_NAME = "agents"
-WORKSPACE_AGENTS_PROMPT_FILE_NAME = "AGENTS.md"
+WORKSPACE_AGENT_CONTEXT_FILES = {
+    "AGENTS.md": "# AGENTS\n\n以下是约束 Agent 行为的一些要求\n",
+    "USER.md": "# USER\n\n以下是有关用户的一些信息\n",
+    "MEMORY.md": "# MEMORY\n\n以下是 Agent 需要记住的一些信息\n",
+}
 UPLOADS_DIR_NAME = "uploads"
 OUTPUTS_DIR_NAME = "outputs"
 LARGE_TOOL_RESULTS_DIR_NAME = "large_tool_results"
@@ -22,7 +26,7 @@ __all__ = [
     "VIRTUAL_PATH_PREFIX",
     "WORKSPACE_DIR_NAME",
     "WORKSPACE_AGENTS_DIR_NAME",
-    "WORKSPACE_AGENTS_PROMPT_FILE_NAME",
+    "WORKSPACE_AGENT_CONTEXT_FILES",
     "UPLOADS_DIR_NAME",
     "OUTPUTS_DIR_NAME",
     "LARGE_TOOL_RESULTS_DIR_NAME",

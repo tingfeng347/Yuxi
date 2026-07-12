@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -7,10 +8,11 @@ from fastapi import HTTPException
 from langchain.messages import AIMessage, HumanMessage
 
 from yuxi.agents import context as agent_context
+from yuxi.agents.backends.sandbox import paths as workspace_paths
 from yuxi.services import chat_service as svc
 
 
-def _empty_agents_prompt(_thread_id: str, _uid: str) -> str:
+def _empty_agent_context(_thread_id: str, _uid: str) -> str:
     return ""
 
 
@@ -271,11 +273,35 @@ async def test_save_messages_from_langgraph_state_backfills_run_output_message(m
 
 
 @pytest.mark.asyncio
-async def test_build_agent_input_context_merges_workspace_agents_prompt(monkeypatch: pytest.MonkeyPatch):
-    def fake_agents_prompt(_thread_id: str, _uid: str) -> str:
-        return "回答前先读取 AGENTS.md"
+async def test_build_agent_input_context_loads_all_workspace_agent_context_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(workspace_paths.conf, "save_dir", str(tmp_path))
+    workspace_paths.ensure_thread_dirs("thread-1", "user-1")
+    agents_dir = tmp_path / "threads" / "shared" / "user-1" / "workspace" / "agents"
+    (agents_dir / "AGENTS.md").write_text("行为约束", encoding="utf-8")
+    (agents_dir / "USER.md").write_text("用户信息", encoding="utf-8")
+    (agents_dir / "MEMORY.md").write_text("长期记忆", encoding="utf-8")
 
-    monkeypatch.setattr(agent_context, "_load_workspace_agents_prompt", fake_agents_prompt)
+    context = await agent_context.build_agent_input_context({}, thread_id="thread-1", uid="user-1")
+
+    assert context["system_prompt"] == (
+        "用户工作区 agents/AGENTS.md 内容：\n行为约束\n\n"
+        "用户工作区 agents/USER.md 内容：\n用户信息\n\n"
+        "用户工作区 agents/MEMORY.md 内容：\n长期记忆"
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_agent_input_context_merges_workspace_agent_context(monkeypatch: pytest.MonkeyPatch):
+    def fake_agent_context(_thread_id: str, _uid: str) -> str:
+        return (
+            "用户工作区 agents/AGENTS.md 内容：\n回答前先读取 AGENTS.md\n\n"
+            "用户工作区 agents/USER.md 内容：\n用户偏好中文"
+        )
+
+    monkeypatch.setattr(agent_context, "_load_workspace_agent_context", fake_agent_context)
 
     context = await agent_context.build_agent_input_context(
         {"system_prompt": "原始系统提示词", "temperature": 0.1},
@@ -283,7 +309,11 @@ async def test_build_agent_input_context_merges_workspace_agents_prompt(monkeypa
         uid="user-1",
     )
 
-    assert context["system_prompt"] == "原始系统提示词\n\n用户工作区 agents/AGENTS.md 内容：\n回答前先读取 AGENTS.md"
+    assert context["system_prompt"] == (
+        "原始系统提示词\n\n"
+        "用户工作区 agents/AGENTS.md 内容：\n回答前先读取 AGENTS.md\n\n"
+        "用户工作区 agents/USER.md 内容：\n用户偏好中文"
+    )
     assert context["temperature"] == 0.1
     assert context["thread_id"] == "thread-1"
     assert context["uid"] == "user-1"
@@ -570,10 +600,10 @@ async def test_get_agent_state_view_reports_malformed_subagent_run_as_server_err
 
 
 @pytest.mark.asyncio
-async def test_build_agent_input_context_keeps_prompt_when_workspace_agents_prompt_empty(
+async def test_build_agent_input_context_keeps_prompt_when_workspace_agent_context_empty(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr(agent_context, "_load_workspace_agents_prompt", _empty_agents_prompt)
+    monkeypatch.setattr(agent_context, "_load_workspace_agent_context", _empty_agent_context)
 
     context = await agent_context.build_agent_input_context(
         {"system_prompt": "原始系统提示词"},

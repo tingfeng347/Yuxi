@@ -15,25 +15,29 @@ def _user() -> SimpleNamespace:
     return SimpleNamespace(id="db-id-1", uid="user-1")
 
 
-def test_workspace_root_creates_default_agents_prompt_file(tmp_path: Path, monkeypatch) -> None:
+def test_workspace_root_creates_default_agent_context_files(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(workspace_paths.conf, "save_dir", str(tmp_path))
 
     root = svc._workspace_root(_user())
 
-    agents_file = root / "agents" / "AGENTS.md"
     assert root == tmp_path / "threads" / "shared" / "user-1" / "workspace"
-    assert agents_file.is_file()
-    assert agents_file.read_text(encoding="utf-8") == ""
+    assert (root / "agents" / "AGENTS.md").read_text(encoding="utf-8") == (
+        "# AGENTS\n\n以下是约束 Agent 行为的一些要求\n"
+    )
+    assert (root / "agents" / "USER.md").read_text(encoding="utf-8") == ("# USER\n\n以下是有关用户的一些信息\n")
+    assert (root / "agents" / "MEMORY.md").read_text(encoding="utf-8") == (
+        "# MEMORY\n\n以下是 Agent 需要记住的一些信息\n"
+    )
 
 
-def test_ensure_thread_dirs_creates_default_agents_prompt_file(tmp_path: Path, monkeypatch) -> None:
+def test_ensure_thread_dirs_creates_default_agent_context_files(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(workspace_paths.conf, "save_dir", str(tmp_path))
 
     workspace_paths.ensure_thread_dirs("thread-1", "user-1")
 
-    agents_file = tmp_path / "threads" / "shared" / "user-1" / "workspace" / "agents" / "AGENTS.md"
-    assert agents_file.is_file()
-    assert agents_file.read_text(encoding="utf-8") == ""
+    agents_dir = tmp_path / "threads" / "shared" / "user-1" / "workspace" / "agents"
+    assert {path.name for path in agents_dir.iterdir()} == {"AGENTS.md", "USER.md", "MEMORY.md"}
+    assert all(path.read_text(encoding="utf-8").strip() for path in agents_dir.iterdir())
 
 
 def test_workspace_root_keeps_existing_agents_prompt_file(tmp_path: Path, monkeypatch) -> None:

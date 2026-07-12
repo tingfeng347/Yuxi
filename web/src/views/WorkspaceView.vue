@@ -148,8 +148,8 @@
           的执行流程中，用来补充你的长期偏好、业务背景和协作要求。
         </p>
         <p>
-          目前支持 <code>AGENTS.md</code>：其中内容会在每次会话中注入到 Agent Prompt，适合写入希望
-          Agent 长期遵守的信息。
+          目前支持 <code>AGENTS.md</code>、<code>USER.md</code> 和 <code>MEMORY.md</code>：其中内容会在每次会话中注入到
+          Agent Prompt，分别适合写入行为约束、用户信息和希望 Agent 记住的信息。
         </p>
 
         <section class="agents-guide-section">

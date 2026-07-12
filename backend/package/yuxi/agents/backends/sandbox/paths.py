@@ -9,8 +9,8 @@ from yuxi.utils.paths import (
     OUTPUTS_DIR_NAME,
     UPLOADS_DIR_NAME,
     VIRTUAL_PATH_PREFIX,
+    WORKSPACE_AGENT_CONTEXT_FILES,
     WORKSPACE_AGENTS_DIR_NAME,
-    WORKSPACE_AGENTS_PROMPT_FILE_NAME,
     WORKSPACE_DIR_NAME,
 )
 
@@ -59,8 +59,8 @@ def sandbox_workspace_dir(thread_id: str, uid: str) -> Path:
     return _global_user_data_dir(uid) / WORKSPACE_DIR_NAME
 
 
-def sandbox_workspace_agents_prompt_file(thread_id: str, uid: str) -> Path:
-    return sandbox_workspace_dir(thread_id, uid) / WORKSPACE_AGENTS_DIR_NAME / WORKSPACE_AGENTS_PROMPT_FILE_NAME
+def sandbox_workspace_agent_context_file(thread_id: str, uid: str, filename: str) -> Path:
+    return sandbox_workspace_dir(thread_id, uid) / WORKSPACE_AGENTS_DIR_NAME / filename
 
 
 def _threads_root_dir() -> Path:
@@ -87,7 +87,6 @@ def _chmod_writable(path: Path, *, dir: bool = False) -> None:
 def ensure_workspace_default_files(workspace_dir: Path) -> None:
     workspace_dir = _resolve_threads_child_path(workspace_dir)
     agents_dir = workspace_dir / WORKSPACE_AGENTS_DIR_NAME
-    agents_file = agents_dir / WORKSPACE_AGENTS_PROMPT_FILE_NAME
 
     try:
         agents_dir.mkdir(parents=True, exist_ok=True)
@@ -99,15 +98,17 @@ def ensure_workspace_default_files(workspace_dir: Path) -> None:
         logger.warning(f"工作区默认 Agents 目录初始化失败: {exc}")
         return
 
-    try:
-        with agents_file.open("xb"):
-            pass
-        _chmod_writable(agents_file)
-    except FileExistsError:
-        if agents_file.is_dir():
-            logger.warning("工作区默认 AGENTS.md 创建失败：路径已被目录占用")
-    except OSError as exc:
-        logger.warning(f"工作区默认 Agents 文件初始化失败: {exc}")
+    for filename, default_content in WORKSPACE_AGENT_CONTEXT_FILES.items():
+        context_file = agents_dir / filename
+        try:
+            with context_file.open("x", encoding="utf-8") as buffer:
+                buffer.write(default_content)
+            _chmod_writable(context_file)
+        except FileExistsError:
+            if context_file.is_dir():
+                logger.warning(f"工作区默认 {filename} 创建失败：路径已被目录占用")
+        except OSError as exc:
+            logger.warning(f"工作区默认 {filename} 初始化失败: {exc}")
 
 
 def sandbox_uploads_dir(thread_id: str) -> Path:

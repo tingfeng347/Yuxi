@@ -5,8 +5,9 @@ import uuid
 from dataclasses import MISSING, dataclass, field, fields
 from typing import Any, get_origin
 
-from yuxi.agents.backends.sandbox.paths import sandbox_workspace_agents_prompt_file
+from yuxi.agents.backends.sandbox.paths import sandbox_workspace_agent_context_file
 from yuxi.utils.logging_config import logger
+from yuxi.utils.paths import WORKSPACE_AGENT_CONTEXT_FILES
 
 WORKSPACE_AGENTS_PROMPT_MAX_BYTES = 64 * 1024
 DEFAULT_SUMMARY_THRESHOLD_K = 100  # 100K tokens
@@ -58,26 +59,29 @@ def _role_can_access(auth: str | None, role: str | None) -> bool:
     return False
 
 
-def _load_workspace_agents_prompt(thread_id: str, uid: str) -> str:
-    prompt_file = sandbox_workspace_agents_prompt_file(thread_id, uid)
-    try:
-        with prompt_file.open("rb") as buffer:
-            content = buffer.read(WORKSPACE_AGENTS_PROMPT_MAX_BYTES + 1)
-    except FileNotFoundError:
-        return ""
-    except IsADirectoryError:
-        logger.warning("读取工作区 AGENTS.md 失败: 路径是目录")
-        return ""
-    except OSError as exc:
-        logger.warning(f"读取工作区 AGENTS.md 失败: {exc}")
-        return ""
+def _load_workspace_agent_context(thread_id: str, uid: str) -> str:
+    sections: list[str] = []
+    for filename in WORKSPACE_AGENT_CONTEXT_FILES:
+        context_file = sandbox_workspace_agent_context_file(thread_id, uid, filename)
+        try:
+            with context_file.open("rb") as buffer:
+                content = buffer.read(WORKSPACE_AGENTS_PROMPT_MAX_BYTES + 1)
+        except FileNotFoundError:
+            continue
+        except IsADirectoryError:
+            logger.warning(f"读取工作区 {filename} 失败: 路径是目录")
+            continue
+        except OSError as exc:
+            logger.warning(f"读取工作区 {filename} 失败: {exc}")
+            continue
 
-    prompt = content[:WORKSPACE_AGENTS_PROMPT_MAX_BYTES].decode("utf-8", errors="replace").strip()
-    if not prompt:
-        return ""
-    if len(content) > WORKSPACE_AGENTS_PROMPT_MAX_BYTES:
-        return f"{prompt}\n\n[AGENTS.md 内容已截断]"
-    return prompt
+        prompt = content[:WORKSPACE_AGENTS_PROMPT_MAX_BYTES].decode("utf-8", errors="replace").strip()
+        if not prompt:
+            continue
+        if len(content) > WORKSPACE_AGENTS_PROMPT_MAX_BYTES:
+            prompt = f"{prompt}\n\n[{filename} 内容已截断]"
+        sections.append(f"用户工作区 agents/{filename} 内容：\n{prompt}")
+    return "\n\n".join(sections)
 
 
 async def build_agent_input_context(
@@ -89,12 +93,11 @@ async def build_agent_input_context(
     request_id: str | None = None,
 ) -> dict:
     input_context = dict(agent_config or {})
-    agents_prompt = await asyncio.to_thread(_load_workspace_agents_prompt, thread_id, uid)
+    agent_context = await asyncio.to_thread(_load_workspace_agent_context, thread_id, uid)
 
-    if agents_prompt:
-        agents_section = f"用户工作区 agents/AGENTS.md 内容：\n{agents_prompt}"
+    if agent_context:
         base_prompt = str(input_context.get("system_prompt") or "").rstrip()
-        input_context["system_prompt"] = f"{base_prompt}\n\n{agents_section}" if base_prompt else agents_section
+        input_context["system_prompt"] = f"{base_prompt}\n\n{agent_context}" if base_prompt else agent_context
 
     input_context.update({"uid": uid, "thread_id": thread_id, "run_id": run_id, "request_id": request_id})
     return input_context

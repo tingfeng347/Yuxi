@@ -7,7 +7,7 @@ from .paths import (
     sandbox_outputs_dir,
     sandbox_uploads_dir,
     sandbox_user_data_dir,
-    sandbox_workspace_agents_prompt_file,
+    sandbox_workspace_agent_context_file,
     sandbox_workspace_dir,
     virtual_path_for_thread_file,
 )
@@ -38,7 +38,7 @@ __all__ = [
     "sandbox_outputs_dir",
     "sandbox_uploads_dir",
     "sandbox_user_data_dir",
-    "sandbox_workspace_agents_prompt_file",
+    "sandbox_workspace_agent_context_file",
     "sandbox_workspace_dir",
     "shutdown_sandbox_provider",
     "virtual_path_for_thread_file",
