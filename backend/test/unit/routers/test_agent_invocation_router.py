@@ -68,6 +68,7 @@ def test_agent_eval_run_returns_service_payload(monkeypatch: pytest.MonkeyPatch)
             "evaluation": {"dataset_name": "dataset-1", "dataset_item_id": "item-1", "ignored": "nope"},
             "meta": {"request_id": "req-1", "attachment_file_ids": ["file-1"]},
             "model_spec": "provider:model",
+            "tool_approval_mode": "always_trust",
         },
     )
 
@@ -78,6 +79,7 @@ def test_agent_eval_run_returns_service_payload(monkeypatch: pytest.MonkeyPatch)
     assert calls["kwargs"]["evaluation"] == {"dataset_name": "dataset-1", "dataset_item_id": "item-1"}
     assert calls["kwargs"]["meta"] == {"request_id": "req-1", "attachment_file_ids": ["file-1"]}
     assert calls["kwargs"]["model_spec"] == "provider:model"
+    assert calls["kwargs"]["tool_approval_mode"] == "always_trust"
     assert calls["kwargs"]["current_user"].uid == "user-1"
 
 

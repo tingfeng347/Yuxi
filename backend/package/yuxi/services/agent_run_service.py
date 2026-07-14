@@ -27,6 +27,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from yuxi.agents.buildin import agent_manager
 from yuxi.agents.models import resolve_chat_model_spec
+from yuxi.agents.tool_approval import DEFAULT_TOOL_APPROVAL_MODE, normalize_tool_approval_mode
 from yuxi.models.providers.cache import model_cache
 from yuxi.repositories.agent_repository import AgentRepository
 from yuxi.repositories.agent_run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository
@@ -88,7 +89,19 @@ class AgentRunWaitTimeout(Exception):
         super().__init__(f"agent run {run_id} is still {status} after waiting")
 
 
-def resolve_agent_run_model_spec(model_spec: str | None, agent_item, agent_backend) -> str:
+def _load_agent_context(agent_item, agent_backend):
+    """用 Agent 配置的 context 片段实例化并填充运行上下文，供 run 解析器读取配置字段。"""
+    context = agent_backend.context_schema()
+    config_json = getattr(agent_item, "config_json", None) or {}
+    config_context = config_json.get("context") if isinstance(config_json, dict) else {}
+    if isinstance(config_context, dict):
+        context.update_from_dict(config_context)
+    return context
+
+
+def resolve_agent_run_model_spec(
+    model_spec: str | None, agent_item, agent_backend, context=None
+) -> str:
     """解析本次 run 实际使用的模型：显式覆盖优先，否则配置模型，最后系统默认模型。"""
     normalized = model_spec.strip() if isinstance(model_spec, str) else None
     if normalized:
@@ -97,13 +110,36 @@ def resolve_agent_run_model_spec(model_spec: str | None, agent_item, agent_backe
             raise HTTPException(status_code=422, detail=f"未找到可用聊天模型: '{normalized}'")
         return normalized
 
-    context = agent_backend.context_schema()
-    config_json = getattr(agent_item, "config_json", None) or {}
-    config_context = config_json.get("context") if isinstance(config_json, dict) else {}
-    if isinstance(config_context, dict):
-        context.update_from_dict(config_context)
-
+    if context is None:
+        context = _load_agent_context(agent_item, agent_backend)
     return resolve_chat_model_spec(getattr(context, "model", None))
+
+
+def resolve_agent_run_tool_approval_mode(
+    requested_mode: str | None, agent_item, agent_backend, context=None
+) -> str:
+    """解析本次 run 的工具审批模式：显式覆盖优先，否则使用 Agent 配置与默认值。"""
+    source = requested_mode
+    if source is None:
+        if context is None:
+            context = _load_agent_context(agent_item, agent_backend)
+        source = getattr(context, "tool_approval_mode", DEFAULT_TOOL_APPROVAL_MODE)
+    try:
+        return normalize_tool_approval_mode(source)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def resolve_agent_run_config(
+    model_spec: str | None, tool_approval_mode: str | None, agent_item, agent_backend
+) -> tuple[str, str]:
+    """一次性解析 model_spec 与 tool_approval_mode，共享同一份运行上下文。"""
+    context = _load_agent_context(agent_item, agent_backend)
+    resolved_model_spec = resolve_agent_run_model_spec(model_spec, agent_item, agent_backend, context)
+    resolved_tool_approval_mode = resolve_agent_run_tool_approval_mode(
+        tool_approval_mode, agent_item, agent_backend, context
+    )
+    return resolved_model_spec, resolved_tool_approval_mode
 
 
 def _build_run_response(run) -> dict:
@@ -114,6 +150,17 @@ def _build_run_response(run) -> dict:
         "request_id": run.request_id,
         "stream_url": f"/api/agent/runs/{run.id}/events",
     }
+
+
+def _validate_resume_input(resume: object) -> None:
+    if not isinstance(resume, dict) or "decisions" not in resume:
+        return
+    decisions = resume.get("decisions")
+    if not isinstance(decisions, list) or not decisions:
+        raise HTTPException(status_code=422, detail="decisions 必须是非空数组")
+    for decision in decisions:
+        if not isinstance(decision, dict) or decision.get("type") not in {"approve", "reject"}:
+            raise HTTPException(status_code=422, detail="decision.type 只支持 approve 或 reject")
 
 
 def _compact_message_dict(message: dict) -> dict:
@@ -174,6 +221,7 @@ def _compact_stream_chunk(chunk: dict) -> dict:
             "retryable",
             "job_try",
             "questions",
+            "approval",
             "interrupt_info",
             "source",
             "agent_state",
@@ -353,6 +401,7 @@ async def create_agent_run_view(
     current_uid: str,
     db: AsyncSession,
     model_spec: str | None = None,
+    tool_approval_mode: str | None = None,
     resume: object | None = None,
     created_by_run_id: str | None = None,
 ) -> dict:
@@ -360,6 +409,8 @@ async def create_agent_run_view(
     meta = meta or {}
     if input_message is None and resume is None:
         raise HTTPException(status_code=422, detail="input_message 或 resume 不能为空")
+    if resume is not None:
+        _validate_resume_input(resume)
 
     run_type = "resume" if resume is not None else "chat"
     run_created_by_id = created_by_run_id if run_type == "resume" else None
@@ -385,8 +436,14 @@ async def create_agent_run_view(
 
     if run_type == "resume":
         resolved_model_spec = scope.parent_run.input_payload["model_spec"]
+        # 旧版本固化的 input_payload 没有 tool_approval_mode，回退默认值以兼容历史 interrupted run。
+        resolved_tool_approval_mode = scope.parent_run.input_payload.get(
+            "tool_approval_mode", DEFAULT_TOOL_APPROVAL_MODE
+        )
     else:
-        resolved_model_spec = resolve_agent_run_model_spec(model_spec, scope.agent_item, scope.agent_backend)
+        resolved_model_spec, resolved_tool_approval_mode = resolve_agent_run_config(
+            model_spec, tool_approval_mode, scope.agent_item, scope.agent_backend
+        )
 
     run_input_message = _prepare_run_input_message(
         run_type=run_type,
@@ -394,6 +451,7 @@ async def create_agent_run_view(
         resume=resume,
         request_id=request_id,
         model_spec=resolved_model_spec,
+        tool_approval_mode=resolved_tool_approval_mode,
         meta=meta,
     )
 
@@ -403,7 +461,10 @@ async def create_agent_run_view(
         request_id=request_id,
         input_message=run_input_message,
     )
-    input_payload = {"model_spec": resolved_model_spec}
+    input_payload = {
+        "model_spec": resolved_model_spec,
+        "tool_approval_mode": resolved_tool_approval_mode,
+    }
 
     run, created = await persist_agent_run_record(
         agent_slug=agent_slug,
@@ -443,6 +504,7 @@ def _prepare_run_input_message(
     request_id: str,
     model_spec: str,
     meta: dict,
+    tool_approval_mode: str | None = None,
 ) -> AgentRunInputMessage:
     metadata: dict[str, Any] = {"request_id": request_id}
     if attachment_file_ids := (meta.get("attachment_file_ids") or []):
@@ -456,6 +518,8 @@ def _prepare_run_input_message(
             raise HTTPException(status_code=422, detail="input_message 不能为空")
         if raw_message := input_message.raw_message():
             metadata["raw_message"] = raw_message
+        if tool_approval_mode is not None:
+            metadata["tool_approval_mode"] = tool_approval_mode  # already normalized by resolve_agent_run_config
         return input_message.with_metadata(metadata)
 
     metadata["resume"] = resume

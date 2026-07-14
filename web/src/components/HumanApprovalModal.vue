@@ -1,8 +1,56 @@
 <template>
   <transition name="slide-up">
-    <div v-if="visible" class="approval-modal">
+    <div v-if="visible" class="approval-modal" :class="{ 'is-tool-approval': isToolApproval }">
       <div class="approval-content">
-        <div v-if="normalizedQuestions.length > 1" class="question-tabs">
+        <div v-if="isToolApproval" class="tool-approval-block">
+          <div v-if="actionRequests.length > 1" class="tool-approval-progress" aria-label="审批进度">
+            <span
+              v-for="(_, index) in actionRequests"
+              :key="index"
+              class="tool-progress-step"
+              :class="{
+                active: index === activeToolIndex,
+                completed: Boolean(toolDecisions[index])
+              }"
+            >
+              {{ index + 1 }}
+            </span>
+          </div>
+
+          <div class="approval-header tool-approval-header">
+            <div class="tool-approval-title">
+              <CircleHelp :size="18" />
+              <h4>是否批准此工具操作？</h4>
+            </div>
+            <span v-if="actionRequests.length > 1" class="tool-progress-label">
+              {{ activeToolIndex + 1 }} / {{ actionRequests.length }}
+            </span>
+          </div>
+
+          <div v-if="activeToolRequest" class="tool-request-summary">
+            <span class="tool-request-icon">
+              <component :is="activeToolIcon" :size="18" />
+            </span>
+            <div class="tool-request-copy">
+              <div class="tool-request-name">
+                <strong>{{ toolDisplayName(activeToolRequest.name) }}</strong>
+                <code>{{ activeToolRequest.name }}</code>
+              </div>
+              <a-tooltip placement="topLeft">
+                <template #title>
+                  <pre class="tool-args-tooltip">{{ formattedToolArgs }}</pre>
+                </template>
+                <button type="button" class="tool-args-preview" aria-label="悬浮查看完整参数">
+                  <span>参数</span>
+                  <code>{{ previewedToolArgs }}</code>
+                  <Info :size="13" />
+                </button>
+              </a-tooltip>
+            </div>
+          </div>
+        </div>
+
+        <div v-else-if="normalizedQuestions.length > 1" class="question-tabs">
           <button
             v-for="(questionItem, questionIndex) in normalizedQuestions"
             :key="questionItem.questionId"
@@ -18,7 +66,7 @@
           </button>
         </div>
 
-        <div v-if="activeQuestion" class="question-block">
+        <div v-if="!isToolApproval && activeQuestion" class="question-block">
           <div class="approval-header">
             <h4>{{ activeQuestionIndex + 1 }}. {{ activeQuestion.question }}</h4>
           </div>
@@ -75,7 +123,26 @@
         </div>
       </div>
 
-      <div class="approval-actions">
+      <div v-if="isToolApproval" class="approval-actions tool-approval-actions">
+        <button
+          type="button"
+          class="btn btn-reject"
+          :disabled="isProcessing"
+          @click="handleToolDecision('reject')"
+        >
+          拒绝
+        </button>
+        <button
+          type="button"
+          class="btn btn-approve"
+          :disabled="isProcessing"
+          @click="handleToolDecision('approve')"
+        >
+          批准
+        </button>
+      </div>
+
+      <div v-else class="approval-actions">
         <button class="btn btn-reject" @click="handleCancel" :disabled="isProcessing">取消</button>
         <button
           class="btn btn-approve"
@@ -96,15 +163,26 @@
 
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
+import { CircleHelp, Info, Wrench } from 'lucide-vue-next'
 import {
   isOtherOption,
   normalizeQuestions,
   DEFAULT_OTHER_OPTION_VALUE
 } from '@/utils/questionUtils'
+import { getToolIcon } from '@/components/ToolCallingResult/toolRegistry'
+import { buildToolApprovalDecisions } from '@/utils/toolApproval'
+
+const TOOL_DISPLAY_NAMES = {
+  write_file: '写入文件',
+  edit_file: '编辑文件',
+  execute: '执行命令',
+}
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
-  questions: { type: Array, default: () => [] }
+  questions: { type: Array, default: () => [] },
+  kind: { type: String, default: 'question' },
+  actionRequests: { type: Array, default: () => [] }
 })
 
 const emit = defineEmits(['submit', 'cancel'])
@@ -114,6 +192,8 @@ const activeQuestionIndex = ref(0)
 const selectedValues = ref({})
 const otherTexts = ref({})
 const otherTextareaRef = ref(null)
+const toolDecisions = ref({})
+const activeToolIndex = ref(0)
 const OTHER_TEXTAREA_MAX_ROWS = 4
 
 const normalizedQuestions = computed(() => {
@@ -127,6 +207,9 @@ const normalizedQuestions = computed(() => {
     }
   })
 })
+const isToolApproval = computed(() => props.kind === 'tool_approval')
+const activeToolRequest = computed(() => props.actionRequests[activeToolIndex.value] || null)
+const activeToolIcon = computed(() => getToolIcon(activeToolRequest.value?.name) || Wrench)
 
 const activeQuestion = computed(() => {
   if (normalizedQuestions.value.length === 0) return null
@@ -139,6 +222,8 @@ const resetForm = () => {
   activeQuestionIndex.value = 0
   selectedValues.value = {}
   otherTexts.value = {}
+  toolDecisions.value = {}
+  activeToolIndex.value = 0
 }
 
 const adjustOtherTextareaHeight = () => {
@@ -231,6 +316,7 @@ watch(
   (newVal) => {
     if (newVal) {
       activeQuestionIndex.value = 0
+      activeToolIndex.value = 0
       nextTick(() => {
         adjustOtherTextareaHeight()
       })
@@ -370,9 +456,40 @@ const handleCancel = () => {
   if (isProcessing.value) return
   emit('cancel')
 }
+
+const handleToolDecision = (decision) => {
+  if (isProcessing.value || !activeToolRequest.value) return
+
+  const nextDecisions = { ...toolDecisions.value, [activeToolIndex.value]: decision }
+  toolDecisions.value = nextDecisions
+
+  if (activeToolIndex.value < props.actionRequests.length - 1) {
+    activeToolIndex.value += 1
+    return
+  }
+
+  isProcessing.value = true
+  emit('submit', {
+    decisions: buildToolApprovalDecisions(nextDecisions, props.actionRequests.length)
+  })
+}
+
+const toolDisplayName = (name) =>
+  TOOL_DISPLAY_NAMES[name] || '工具调用'
+
+const formatToolArgs = (args) =>
+  typeof args === 'string' ? args : JSON.stringify(args ?? {}, null, 2)
+
+const previewToolArgs = (formattedArgs) => {
+  const value = formattedArgs.replace(/\s+/g, ' ')
+  return value.length > 96 ? `${value.slice(0, 93)}...` : value
+}
+
+const formattedToolArgs = computed(() => formatToolArgs(activeToolRequest.value?.args))
+const previewedToolArgs = computed(() => previewToolArgs(formattedToolArgs.value))
 </script>
 
-<style scoped>
+<style scoped lang="less">
 .approval-modal {
   background: var(--gray-0);
   border-radius: 12px 12px;
@@ -382,6 +499,10 @@ const handleCancel = () => {
   min-width: 360px;
   width: fit-content;
   border: 1px solid var(--gray-200);
+
+  &.is-tool-approval {
+    max-width: 560px;
+  }
 }
 
 .approval-content {
@@ -459,6 +580,147 @@ const handleCancel = () => {
   font-weight: 500;
   color: var(--gray-800);
   text-align: left;
+}
+
+.tool-approval-header {
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.tool-approval-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text);
+
+  h4 {
+    font-size: 15px;
+    font-weight: 600;
+  }
+}
+
+.tool-approval-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.tool-progress-step {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid var(--gray-150);
+  background: var(--gray-25);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+
+  &.active {
+    border-color: var(--main-300);
+    background: var(--main-50);
+    color: var(--main-700);
+  }
+
+  &.completed {
+    border-color: var(--gray-300);
+    background: var(--gray-100);
+    color: var(--color-text);
+  }
+}
+
+.tool-progress-label {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.tool-request-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--gray-150);
+  border-radius: 8px;
+  background: var(--gray-10);
+}
+
+.tool-request-icon {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: var(--gray-0);
+  color: var(--color-text-secondary);
+}
+
+.tool-request-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.tool-request-name {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+
+  strong {
+    color: var(--color-text);
+    font-size: 13px;
+  }
+
+  code {
+    overflow: hidden;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.tool-args-preview {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  text-align: left;
+  cursor: help;
+
+  > span,
+  > svg {
+    flex-shrink: 0;
+  }
+
+  code {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.tool-args-tooltip {
+  max-width: 420px;
+  max-height: 240px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
 }
 
 .approval-operation {

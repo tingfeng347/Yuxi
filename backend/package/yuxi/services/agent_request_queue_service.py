@@ -23,7 +23,7 @@ from yuxi.repositories.conversation_repository import ConversationRepository
 from yuxi.services.agent_run_service import (
     create_agent_run_input_message,
     enqueue_agent_run,
-    resolve_agent_run_model_spec,
+    resolve_agent_run_config,
 )
 from yuxi.services.input_message_service import AgentRunInputMessage
 from yuxi.storage.postgres.manager import pg_manager
@@ -104,6 +104,8 @@ def _build_message_metadata(
         metadata["attachment_file_ids"] = attachment_file_ids
     if isinstance(meta.get("agent_invocation_meta"), dict):
         metadata["agent_invocation_meta"] = meta["agent_invocation_meta"]
+    if meta.get("tool_approval_mode") is not None:
+        metadata["tool_approval_mode"] = meta["tool_approval_mode"]
     return metadata
 
 
@@ -120,6 +122,7 @@ async def intake_request(
     agent_item: Any,
     agent_backend: Any,
     model_spec: str | None = None,
+    tool_approval_mode: str | None = None,
     meta: dict | None = None,
 ) -> IntakeResult:
     """创建 request + Message，尝试立即派发。
@@ -163,8 +166,13 @@ async def intake_request(
     else:
         request_status = REQUEST_STATUS_QUEUED
         delivery_status = DELIVERY_STATUS_QUEUED
-        resolved_model_spec = resolve_agent_run_model_spec(model_spec, agent_item, agent_backend)
-        input_payload = {"model_spec": resolved_model_spec}
+        resolved_model_spec, resolved_tool_approval_mode = resolve_agent_run_config(
+            model_spec, tool_approval_mode, agent_item, agent_backend
+        )
+        input_payload = {
+            "model_spec": resolved_model_spec,
+            "tool_approval_mode": resolved_tool_approval_mode,
+        }
 
     run_input_message = input_message.with_metadata(
         _build_message_metadata(request_id=request_id, source=source, input_message=input_message, meta=meta)

@@ -6,6 +6,7 @@ from dataclasses import MISSING, dataclass, field, fields
 from typing import Any, get_origin
 
 from yuxi.agents.backends.sandbox.paths import sandbox_workspace_agent_context_file
+from yuxi.agents.tool_approval import DEFAULT_TOOL_APPROVAL_MODE
 from yuxi.utils.logging_config import logger
 from yuxi.utils.paths import WORKSPACE_AGENT_CONTEXT_FILES
 
@@ -176,6 +177,20 @@ class BaseContext:
             "options": [],
             "description": "智能体的驱动模型，留空时使用系统默认模型。",
             "kind": "llm",
+        },
+    )
+
+    tool_approval_mode: str = field(
+        default=DEFAULT_TOOL_APPROVAL_MODE,
+        metadata={
+            "name": "工具审批模式",
+            "description": "默认审批会在写文件、编辑文件或执行命令前询问；完全信任会自动执行这些工具。",
+            "options": [
+                {"key": "default", "name": "默认审批", "description": "敏感工具执行前请求确认"},
+                {"key": "always_trust", "name": "完全信任", "description": "敏感工具无需确认，自动执行"},
+            ],
+            "type": "string",
+            "auth": "admin",
         },
     )
 

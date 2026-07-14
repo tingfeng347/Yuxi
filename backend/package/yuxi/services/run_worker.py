@@ -342,6 +342,7 @@ async def process_agent_run(ctx, run_id: str):
         "has_image": bool(image_content),
         "attachment_file_ids": input_metadata.get("attachment_file_ids") or [],
         "model_spec": payload.get("model_spec"),
+        "tool_approval_mode": payload.get("tool_approval_mode"),
         "run_type": run_type,
         "created_by_run_id": run.created_by_run_id,
     }
@@ -461,7 +462,11 @@ async def process_agent_run(ctx, run_id: str):
                             run_id,
                             "interrupted",
                             error_type=status,
-                            error_message=first_question or "需要用户回答问题",
+                            error_message=(
+                                "需要用户审批工具操作"
+                                if status == "human_approval_required"
+                                else first_question or "需要用户回答问题"
+                            ),
                         )
                         await _append_end_event(run_id, "interrupted", thread_id=thread_id, payload={"chunk": chunk})
                         terminal_set = True

@@ -10,9 +10,10 @@ import pytest
 sys.path.insert(0, os.getcwd())
 
 from yuxi.services.chat_service import (
-    _normalize_interrupt_questions,
     _build_ask_user_question_payload,
+    _build_tool_approval_payload,
     _coerce_interrupt_payload,
+    _normalize_interrupt_questions,
     stream_agent_resume,
 )
 from yuxi.services import chat_service as svc
@@ -25,6 +26,35 @@ class _FakeSession:
 
     async def commit(self):
         self.commit_count += 1
+
+def test_build_tool_approval_payload_preserves_actions_and_review_configs():
+    payload = _build_tool_approval_payload(
+        {
+            "action_requests": [
+                {"name": "execute", "args": {"command": "pytest -q"}, "description": "approval"}
+            ],
+            "review_configs": [
+                {"action_name": "execute", "allowed_decisions": ["approve", "reject"]}
+            ],
+        },
+        "thread-1",
+    )
+
+    assert payload == {
+        "approval": {
+            "action_requests": [
+                {"name": "execute", "args": {"command": "pytest -q"}, "description": "approval"}
+            ],
+            "review_configs": [
+                {"action_name": "execute", "allowed_decisions": ["approve", "reject"]}
+            ],
+        },
+        "thread_id": "thread-1",
+    }
+
+
+def test_build_tool_approval_payload_rejects_mismatched_lists():
+    assert _build_tool_approval_payload({"action_requests": [{}], "review_configs": []}, "thread-1") is None
 
 
 class TestNormalizeInterruptOptions:

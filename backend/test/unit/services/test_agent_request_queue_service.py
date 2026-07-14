@@ -55,7 +55,9 @@ def test_validate_queue_policy_rejects_unknown():
 def test_agent_run_create_accepts_thread_id():
     from server.routers.agent_router import AgentRunCreate
 
-    assert AgentRunCreate(query="hi", agent_slug="bot", thread_id="t1").thread_id == "t1"
+    payload = AgentRunCreate(query="hi", agent_slug="bot", thread_id="t1")
+    assert payload.thread_id == "t1"
+    assert payload.tool_approval_mode is None
 
 
 # ── fixtures ──

@@ -62,6 +62,7 @@ async def create_agent_call_run_view(
     current_user: User,
     db: AsyncSession,
     queue_policy: str | None = None,
+    tool_approval_mode: str | None = None,
 ) -> dict[str, Any]:
     """创建外部系统非流式 Agent 调用，并返回 Agent Call 响应结构。
 
@@ -89,6 +90,7 @@ async def create_agent_call_run_view(
         requested_thread_id=normalized_thread_id,
         request_id=normalized_request_id,
         model_spec=model_spec,
+        tool_approval_mode=tool_approval_mode,
         current_user=current_user,
         db=db,
         conversation_title="Agent Call Run",
@@ -135,6 +137,7 @@ async def create_agent_eval_run_view(
     current_user: User,
     db: AsyncSession,
     include_trajectory_summary: bool = False,
+    tool_approval_mode: str | None = None,
 ) -> dict[str, Any]:
     """创建一次评估样例运行，并阻塞等待最终 AgentRun 结果。
 
@@ -156,6 +159,7 @@ async def create_agent_eval_run_view(
         requested_thread_id="",
         request_id=_normalize_agent_invocation_request_id(meta),
         model_spec=model_spec,
+        tool_approval_mode=tool_approval_mode,
         current_user=current_user,
         db=db,
         conversation_title="Agent Evaluation Run",
@@ -196,6 +200,7 @@ async def create_agent_invocation_run_view(
     conversation_title: str,
     attachment_file_ids: list[str] | None = None,
     queue_policy: str = "enqueue",
+    tool_approval_mode: str | None = None,
 ) -> dict[str, Any]:
     """将外部调用转换为统一 AgentRunRequest intake。"""
     invocation_metadata = dict(invocation_metadata or {})
@@ -244,6 +249,8 @@ async def create_agent_invocation_run_view(
     }
     if attachment_file_ids:
         run_meta["attachment_file_ids"] = list(attachment_file_ids)
+    if tool_approval_mode is not None:
+        run_meta["tool_approval_mode"] = tool_approval_mode
 
     agent_backend = agent_manager.get_agent(agent_item.backend_id)
     if not agent_backend:
@@ -261,6 +268,7 @@ async def create_agent_invocation_run_view(
         agent_item=agent_item,
         agent_backend=agent_backend,
         model_spec=model_spec,
+        tool_approval_mode=tool_approval_mode,
         meta=run_meta,
     )
     await finalize_intake(db=db, intake=intake)

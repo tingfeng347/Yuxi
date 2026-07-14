@@ -26,8 +26,11 @@ from yuxi.agents.middlewares import (
 )
 from yuxi.agents.middlewares.skills import SkillsMiddleware
 from yuxi.agents.toolkits.service import resolve_configured_runtime_tools
+from yuxi.agents.tool_approval import SENSITIVE_BACKEND_TOOLS, normalize_tool_approval_mode
 
 _SUBAGENT_DISABLED_TOOLS = frozenset({"present_artifacts", "ask_user_question", "install_skill"})
+# 默认审批模式额外隐藏敏感 backend 工具，避免子智能体绕过主线程逐项审批。
+_SUBAGENT_DISABLED_TOOLS_DEFAULT_MODE = _SUBAGENT_DISABLED_TOOLS | SENSITIVE_BACKEND_TOOLS
 
 
 def _tool_name(tool) -> str | None:
@@ -38,19 +41,33 @@ def _tool_name(tool) -> str | None:
     return name if isinstance(name, str) else None
 
 
-def _filter_disabled_tools(tools):
-    return [tool for tool in tools if _tool_name(tool) not in _SUBAGENT_DISABLED_TOOLS]
+def _disabled_tools_for(mode: str) -> frozenset[str]:
+    # 调用方已在边界 normalize 过 mode，这里直接按值选择隐藏集合。
+    if mode == "always_trust":
+        return _SUBAGENT_DISABLED_TOOLS
+    return _SUBAGENT_DISABLED_TOOLS_DEFAULT_MODE
+
+
+def _filter_disabled_tools(tools, disabled_tools: frozenset[str]):
+    return [tool for tool in tools if _tool_name(tool) not in disabled_tools]
 
 
 class _SubAgentToolFilterMiddleware(AgentMiddleware[Any, Any, Any]):
+    def __init__(self, tool_approval_mode: str = "default"):
+        self.disabled_tools = _disabled_tools_for(tool_approval_mode)
+
     def wrap_model_call(self, request, handler):
-        return handler(request.override(tools=_filter_disabled_tools(request.tools or [])))
+        return handler(request.override(tools=_filter_disabled_tools(request.tools or [], self.disabled_tools)))
 
     async def awrap_model_call(self, request, handler):
-        return await handler(request.override(tools=_filter_disabled_tools(request.tools or [])))
+        return await handler(
+            request.override(tools=_filter_disabled_tools(request.tools or [], self.disabled_tools))
+        )
 
 
-async def _build_middlewares(context):
+async def _build_middlewares(context, tool_approval_mode: str):
+    # tool_approval_mode is normalized once by the caller (get_graph / SubAgentBackend.get_graph).
+
     summary_trigger_tokens = getattr(context, "summary_threshold", DEFAULT_SUMMARY_THRESHOLD_K) * 1024
     summary_keep_messages = getattr(context, "summary_keep_messages", DEFAULT_SUMMARY_KEEP_MESSAGES)
     summary_prompt = getattr(context, "summary_prompt", None) or DEFAULT_YUXI_SUMMARY_PROMPT
@@ -81,7 +98,7 @@ async def _build_middlewares(context):
         summary_middleware,
         TodoListMiddleware(system_prompt=TODO_MID_PROMPT),
         PatchToolCallsMiddleware(),
-        _SubAgentToolFilterMiddleware(),
+        _SubAgentToolFilterMiddleware(tool_approval_mode),
         ModelRetryMiddleware(),
         ImageInputCompatibilityMiddleware(),
         TokenUsageMiddleware(),
@@ -122,12 +139,14 @@ class SubAgentBackend(BaseAgent):
             context_schema=self.context_schema,
         )
         model_spec = resolve_chat_model_spec(context.model)
+        tool_approval_mode = normalize_tool_approval_mode(getattr(context, "tool_approval_mode", "default"))
+        disabled_tools = _disabled_tools_for(tool_approval_mode)
 
         return create_agent(
             model=load_chat_model(fully_specified_name=model_spec),
-            tools=_filter_disabled_tools(await resolve_configured_runtime_tools(context)),
+            tools=_filter_disabled_tools(await resolve_configured_runtime_tools(context), disabled_tools),
             system_prompt=build_prompt_with_context(context),
-            middleware=await _build_middlewares(context),
+            middleware=await _build_middlewares(context, tool_approval_mode),
             state_schema=BaseState,
             checkpointer=await self._get_checkpointer(),
         )

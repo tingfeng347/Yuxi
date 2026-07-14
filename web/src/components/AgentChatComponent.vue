@@ -127,6 +127,8 @@
             <HumanApprovalModal
               :visible="currentApprovalModalVisible"
               :questions="currentApprovalQuestions"
+              :kind="approvalState.kind"
+              :action-requests="approvalState.actionRequests"
               @submit="handleQuestionSubmit"
               @cancel="handleQuestionCancel"
             />
@@ -189,6 +191,10 @@
                 @remove-attachment="handleAttachmentRemove"
               >
                 <template #actions-left-extra>
+                  <ToolApprovalModeSelector
+                    :model-value="currentToolApprovalMode"
+                    @update:model-value="handleToolApprovalModeSelect"
+                  />
                   <slot name="input-actions-left" :has-active-thread="!!currentChatId"></slot>
                 </template>
                 <template #actions-right-extra>
@@ -627,6 +633,7 @@ import {
   SyncOutlined
 } from '@ant-design/icons-vue'
 import AgentInputArea from '@/components/AgentInputArea.vue'
+import ToolApprovalModeSelector from '@/components/ToolApprovalModeSelector.vue'
 import ModelSelectorComponent from '@/components/ModelSelectorComponent.vue'
 import AgentMessageComponent from '@/components/AgentMessageComponent.vue'
 import RefsComponent from '@/components/RefsComponent.vue'
@@ -657,6 +664,7 @@ import FallbackAvatar from '@/components/common/FallbackAvatar.vue'
 import { enrichTaskToolCalls, parseToolCallArgs } from '@/components/ToolCallingResult/toolRegistry'
 import { getConversationDisplayItems } from '@/utils/messageGrouping'
 import { makeChildThreadId } from '@/utils/subagentThread'
+import { isToolApprovalMode } from '@/utils/toolApproval'
 
 // ==================== PROPS & EMITS ====================
 const props = defineProps({
@@ -1004,6 +1012,7 @@ const currentChatId = computed(() => currentThreadId.value)
 // 按线程记忆用户选择的模型；未选择时回退到智能体配置的模型。
 const DRAFT_MODEL_KEY = '__draft__'
 const selectedModelByThread = reactive({})
+const selectedToolApprovalModeByThread = reactive({})
 const agentDefaultModel = computed(
   () =>
     agentConfig.value?.model ||
@@ -1022,6 +1031,22 @@ const handleModelSelect = (spec) => {
       delete selectedModelByThread[currentChatId.value || DRAFT_MODEL_KEY]
     }
   }
+}
+
+const agentDefaultToolApprovalMode = computed(
+  () =>
+    agentConfig.value?.tool_approval_mode ||
+    currentAgent.value?.config_json?.context?.tool_approval_mode ||
+    'default'
+)
+const currentToolApprovalMode = computed(
+  () =>
+    selectedToolApprovalModeByThread[currentChatId.value || DRAFT_MODEL_KEY] ||
+    agentDefaultToolApprovalMode.value
+)
+const handleToolApprovalModeSelect = (mode) => {
+  if (!isToolApprovalMode(mode)) return
+  selectedToolApprovalModeByThread[currentChatId.value || DRAFT_MODEL_KEY] = mode
 }
 
 const currentThreadAgentName = computed(() => {
@@ -2193,18 +2218,30 @@ const fetchThreadMessages = async ({ agentId, threadId, delay = 0 }) => {
   }
 }
 
-// 跨会话还原：用最近一条用户消息记录的 model_spec 还原模型选择
+// 把草稿线程的选择迁移到真实线程：真实线程未设值时才覆盖，迁移后删除草稿。
+const promoteDraftSelection = (selectionByThread, threadId) => {
+  const draft = selectionByThread[DRAFT_MODEL_KEY]
+  if (!draft) return
+  if (!selectionByThread[threadId]) selectionByThread[threadId] = draft
+  delete selectionByThread[DRAFT_MODEL_KEY]
+}
+
+// 跨会话还原：从最近一条显式携带覆盖值的用户消息恢复线程级选择。
 const restoreThreadModelSelection = (threadId, history) => {
-  if (selectedModelByThread[threadId]) return
-  for (let i = history.length - 1; i >= 0; i -= 1) {
-    const msg = history[i]
-    if (msg?.type !== 'human') continue
-    const modelSpec = msg?.extra_metadata?.model_spec
-    if (modelSpec) {
-      selectedModelByThread[threadId] = modelSpec
-      return
+  const restoreField = (target, accept, key) => {
+    if (target[key]) return
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      const msg = history[i]
+      if (msg?.type !== 'human') continue
+      const value = msg?.extra_metadata?.[key]
+      if (accept(value)) {
+        target[key] = value
+        return
+      }
     }
   }
+  restoreField(selectedModelByThread, (spec) => spec, 'model_spec')
+  restoreField(selectedToolApprovalModeByThread, isToolApprovalMode, 'tool_approval_mode')
 }
 
 const fetchThreadFiles = async (threadId) => {
@@ -2554,16 +2591,12 @@ const handleSendMessage = async ({ image } = {}) => {
       return
     }
     // 新建线程：把草稿态的模型选择迁移到真实线程，避免选择丢失
-    const draftModelSpec = selectedModelByThread[DRAFT_MODEL_KEY]
-    if (draftModelSpec) {
-      if (!selectedModelByThread[threadId]) {
-        selectedModelByThread[threadId] = draftModelSpec
-      }
-      delete selectedModelByThread[DRAFT_MODEL_KEY]
-    }
+    promoteDraftSelection(selectedModelByThread, threadId)
+    promoteDraftSelection(selectedToolApprovalModeByThread, threadId)
   }
   // 仅当用户显式选择过模型才下发覆盖；否则传 null，由后端使用智能体配置的模型
   const modelSpec = selectedModelByThread[threadId] || null
+  const toolApprovalMode = selectedToolApprovalModeByThread[threadId] || null
 
   userInput.value = ''
 
@@ -2632,7 +2665,8 @@ const handleSendMessage = async ({ image } = {}) => {
         attachment_file_ids: pendingAttachmentFileIds
       },
       image_content: imageContent,
-      model_spec: modelSpec
+      model_spec: modelSpec,
+      tool_approval_mode: toolApprovalMode
     })
     const status = runResp?.status
     const runId = runResp?.run_id

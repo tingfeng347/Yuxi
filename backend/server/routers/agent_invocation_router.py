@@ -28,6 +28,7 @@ class AgentCallRunCreate(BaseModel):
     thread_id: str | None = Field(None, description="可选会话线程 ID，不传则自动创建临时线程")
     request_id: str | None = Field(None, description="可选请求幂等 ID，不传则自动生成")
     model_spec: str | None = Field(None, description="可选模型覆盖")
+    tool_approval_mode: str | None = Field(None, description="可选工具审批模式覆盖")
     async_mode: bool = Field(False, description="是否只创建运行并立即返回 run_id")
     queue_policy: str | None = Field(
         None,
@@ -53,6 +54,7 @@ class AgentEvalRunCreate(BaseModel):
     meta: dict = Field(default_factory=dict, description="可选，请求追踪信息，例如 request_id、attachment_file_ids")
     image_content: str | None = Field(None, description="可选，base64 图片内容")
     model_spec: str | None = Field(None, description="可选，对话级模型覆盖，优先级高于智能体配置")
+    tool_approval_mode: str | None = Field(None, description="可选工具审批模式覆盖")
     include_trajectory_summary: bool = Field(False, description="是否返回轻量工具调用轨迹摘要")
 
 
@@ -70,6 +72,7 @@ async def create_agent_call_run(
         requested_thread_id=payload.thread_id,
         request_id=payload.request_id,
         model_spec=payload.model_spec,
+        tool_approval_mode=payload.tool_approval_mode,
         async_mode=payload.async_mode,
         queue_policy=payload.queue_policy,
         stream=payload.stream,
@@ -107,6 +110,7 @@ async def create_agent_eval_run(
         meta=dict(payload.meta or {}),
         image_content=payload.image_content,
         model_spec=payload.model_spec,
+        tool_approval_mode=payload.tool_approval_mode,
         include_trajectory_summary=payload.include_trajectory_summary,
         current_user=current_user,
         db=db,

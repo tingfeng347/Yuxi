@@ -216,6 +216,7 @@ async def test_get_agent_run_progress_extracts_tool_call_events(monkeypatch: pyt
 class _FakeContext:
     def __init__(self):
         self.model = "agent-default-model"
+        self.tool_approval_mode = "default"
 
     def update_from_dict(self, data: dict):
         for key, value in data.items():
@@ -710,7 +711,10 @@ async def test_create_agent_run_persists_input_before_enqueue(monkeypatch: pytes
     assert db.added[0].run_id == db.created_run.id
     assert db.added[0].request_id == "req-1"
     assert db.enqueued == [("process_agent_run", db.created_run.id, f"run:{db.created_run.id}")]
-    assert db.created_run_kwargs["input_payload"] == {"model_spec": "agent-default-model"}
+    assert db.created_run_kwargs["input_payload"] == {
+        "model_spec": "agent-default-model",
+        "tool_approval_mode": "default",
+    }
     assert "model_spec" not in db.added[0].extra_metadata
     assert db.added[0].extra_metadata["raw_message"]["type"] == "human"
     assert db.added[0].extra_metadata["raw_message"]["content"] == "hello"
@@ -887,7 +891,7 @@ async def test_create_resume_run_marks_input_message_source(monkeypatch: pytest.
             id="parent-run",
             conversation_thread_id="thread-1",
             status="interrupted",
-            input_payload={"model_spec": "parent-model"},
+            input_payload={"model_spec": "parent-model", "tool_approval_mode": "default"},
         ),
     )
 
@@ -916,7 +920,7 @@ async def test_create_resume_run_without_request_id_reuses_stable_key(monkeypatc
         id="parent-run",
         conversation_thread_id="thread-1",
         status="interrupted",
-        input_payload={"model_spec": "parent-model"},
+        input_payload={"model_spec": "parent-model", "tool_approval_mode": "default"},
     )
     first_db = _patch_agent_run_creation(monkeypatch, parent_run=parent_run)
 
@@ -991,7 +995,7 @@ async def test_create_resume_run_rejects_non_interrupted_parent(monkeypatch: pyt
             id="parent-run",
             conversation_thread_id="thread-1",
             status="running",
-            input_payload={"model_spec": "parent-model"},
+            input_payload={"model_spec": "parent-model", "tool_approval_mode": "default"},
         ),
     )
 
@@ -1384,7 +1388,10 @@ async def test_create_chat_run_with_image_persists_multimodal_message_type(monke
         db=db,
     )
 
-    assert db.created_run_kwargs["input_payload"] == {"model_spec": "agent-default-model"}
+    assert db.created_run_kwargs["input_payload"] == {
+        "model_spec": "agent-default-model",
+        "tool_approval_mode": "default",
+    }
     assert db.added[0].message_type == "multimodal_image"
     assert db.added[0].image_content == "base64-image"
     raw_message = db.added[0].extra_metadata["raw_message"]
@@ -1449,7 +1456,7 @@ async def test_create_resume_run_inherits_parent_model_spec(monkeypatch: pytest.
             id="parent-run",
             conversation_thread_id="thread-1",
             status="interrupted",
-            input_payload={"model_spec": "parent-model"},
+            input_payload={"model_spec": "parent-model", "tool_approval_mode": "always_trust"},
         ),
     )
 
@@ -1466,6 +1473,72 @@ async def test_create_resume_run_inherits_parent_model_spec(monkeypatch: pytest.
     )
 
     assert db.created_run_kwargs["input_payload"]["model_spec"] == "parent-model"
+    assert db.created_run_kwargs["input_payload"]["tool_approval_mode"] == "always_trust"
+
+
+@pytest.mark.asyncio
+async def test_create_resume_run_defaults_tool_approval_mode_for_legacy_parent(monkeypatch: pytest.MonkeyPatch):
+    # 旧版本固化的 input_payload 没有 tool_approval_mode，resume 必须回退默认值而不能报错。
+    db = _patch_agent_run_creation(
+        monkeypatch,
+        parent_run=SimpleNamespace(
+            id="parent-run",
+            conversation_thread_id="thread-1",
+            status="interrupted",
+            input_payload={"model_spec": "parent-model"},
+        ),
+    )
+
+    await agent_run_service.create_agent_run_view(
+        input_message=None,
+        agent_slug="default",
+        thread_id="thread-1",
+        meta={"request_id": "resume-req"},
+        current_uid="user-1",
+        db=db,
+        resume={"decisions": [{"type": "approve"}]},
+        created_by_run_id="parent-run",
+    )
+
+    assert db.created_run_kwargs["input_payload"]["tool_approval_mode"] == "default"
+
+
+def test_resolve_tool_approval_mode_uses_request_then_agent_config_then_default():
+    configured_agent = SimpleNamespace(config_json={"context": {"tool_approval_mode": "always_trust"}})
+    default_agent = SimpleNamespace(config_json={})
+
+    assert (
+        agent_run_service.resolve_agent_run_tool_approval_mode("default", configured_agent, _FakeBackend())
+        == "default"
+    )
+    assert (
+        agent_run_service.resolve_agent_run_tool_approval_mode(None, configured_agent, _FakeBackend())
+        == "always_trust"
+    )
+    assert (
+        agent_run_service.resolve_agent_run_tool_approval_mode(None, default_agent, _FakeBackend())
+        == "default"
+    )
+
+
+def test_resolve_tool_approval_mode_rejects_unknown_value():
+    with pytest.raises(agent_run_service.HTTPException) as exc:
+        agent_run_service.resolve_agent_run_tool_approval_mode(
+            "unknown", SimpleNamespace(config_json={}), _FakeBackend()
+        )
+
+    assert exc.value.status_code == 422
+
+
+def test_validate_resume_input_accepts_only_approve_and_reject_decisions():
+    agent_run_service._validate_resume_input(
+        {"decisions": [{"type": "approve"}, {"type": "reject", "message": "no"}]}
+    )
+
+    with pytest.raises(agent_run_service.HTTPException) as exc:
+        agent_run_service._validate_resume_input({"decisions": [{"type": "edit"}]})
+
+    assert exc.value.status_code == 422
 
 
 def test_compact_stream_chunk_retains_compression_field():
@@ -1482,3 +1555,18 @@ def test_compact_stream_chunk_retains_compression_field():
 
     assert compact["status"] == "context_compression"
     assert compact["compression"] == {"type": "yuxi.context_compression", "status": "started"}
+
+
+def test_compact_stream_chunk_retains_tool_approval_payload():
+    approval = {
+        "action_requests": [{"name": "execute", "args": {"command": "pytest -q"}}],
+        "review_configs": [
+            {"action_name": "execute", "allowed_decisions": ["approve", "reject"]}
+        ],
+    }
+
+    compact = agent_run_service._compact_stream_chunk(
+        {"status": "human_approval_required", "run_id": "run-1", "approval": approval}
+    )
+
+    assert compact["approval"] == approval

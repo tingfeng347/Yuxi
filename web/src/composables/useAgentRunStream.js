@@ -2,6 +2,7 @@ import { unref } from 'vue'
 import { agentApi } from '@/apis'
 import { handleChatError } from '@/utils/errorHandler'
 import { compareRunSeq, normalizeRunSeq, resolveRunResumeAfterSeq } from '@/utils/runStreamResume'
+import { hasPendingInterruptPayload } from '@/utils/toolApproval'
 
 const RUN_INTERRUPTED_STATUS = 'interrupted'
 const RUN_TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled'])
@@ -153,7 +154,7 @@ export function useAgentRunStream({
 
   const hasPendingInterruptForRun = (threadState, runId) => {
     const pendingInterrupt = threadState?.pendingInterrupt
-    if (!pendingInterrupt?.questions?.length) return false
+    if (!hasPendingInterruptPayload(pendingInterrupt)) return false
     return !pendingInterrupt.interruptedRunId || pendingInterrupt.interruptedRunId === runId
   }
 
