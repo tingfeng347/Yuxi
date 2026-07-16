@@ -973,6 +973,8 @@ async def test_create_resume_run_without_request_id_reuses_stable_key(monkeypatc
     assert len(request_id) <= 64
     assert retry_db.request_id_lookups == [request_id]
     assert retry_db.created_run_kwargs is None
+    assert retry_db.order[-2:] == ["commit", "enqueue"]
+    assert retry_db.enqueued == [("process_agent_run", "existing-resume-run", "run:existing-resume-run")]
 
 
 @pytest.mark.asyncio
@@ -1358,6 +1360,9 @@ def _patch_agent_run_creation(
         async def get_conversation_by_thread_id(self, thread_id: str):
             del thread_id
             return SimpleNamespace(id=1, uid="user-1", status="active", agent_id="default")
+
+        async def lock_conversation_by_thread_id(self, thread_id: str):
+            return await self.get_conversation_by_thread_id(thread_id)
 
     class AgentRepo:
         def __init__(self, db_session):

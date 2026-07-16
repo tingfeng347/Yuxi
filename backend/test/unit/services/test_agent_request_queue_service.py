@@ -213,6 +213,35 @@ async def test_intake_idempotent_rejects_cross_user(session):
     assert exc_info.value.status_code == 409
 
 
+@pytest.mark.asyncio
+async def test_intake_idempotent_rejects_scope_mismatch(session):
+    from fastapi import HTTPException
+
+    from yuxi.services.input_message_service import build_chat_input_message
+    from yuxi.storage.postgres.models_business import Conversation
+
+    await _seed_thread(session)
+    session.add(Conversation(id=11, thread_id="t2", uid="user-1", agent_id="other", status="active"))
+    await _create_request(session, request_id="req-scope")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await intake_request(
+            db=session,
+            request_id="req-scope",
+            uid="user-1",
+            agent_slug="other",
+            thread_id="t2",
+            source="chat",
+            queue_policy="reject",
+            input_message=build_chat_input_message("different request"),
+            agent_item=MagicMock(),
+            agent_backend=MagicMock(),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "request_id_conflict"
+
+
 # ── delivery_status: create_message ──
 
 

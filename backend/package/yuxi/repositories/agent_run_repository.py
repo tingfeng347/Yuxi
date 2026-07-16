@@ -232,19 +232,19 @@ class AgentRunRepository:
         status: str,
         error_type: str | None = None,
         error_message: str | None = None,
-    ) -> AgentRun | None:
+    ) -> tuple[AgentRun | None, bool]:
         run = await self._lock_run(run_id)
         if not run:
-            return None
+            return None, False
         if run.status in TERMINAL_RUN_STATUSES:
-            return run
+            return run, False
         run.status = status
         run.error_type = error_type
         run.error_message = error_message
         run.finished_at = utc_now_naive()
         run.updated_at = run.finished_at
         await self.db.flush()
-        return run
+        return run, True
 
     async def _lock_run(self, run_id: str) -> AgentRun | None:
         result = await self.db.execute(select(AgentRun).where(AgentRun.id == run_id).with_for_update())

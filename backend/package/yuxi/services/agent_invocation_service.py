@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yuxi.agents.buildin import agent_manager
 from yuxi.repositories.agent_repository import AgentRepository
 from yuxi.repositories.agent_run_repository import AgentRunRepository
+from yuxi.repositories.agent_run_request_repository import AgentRunRequestRepository
 from yuxi.repositories.conversation_repository import ConversationRepository
 from yuxi.services.agent_request_queue_service import (
     finalize_intake,
@@ -211,8 +212,9 @@ async def create_agent_invocation_run_view(
     if not agent_item:
         raise HTTPException(status_code=404, detail="智能体不存在")
 
+    existing_request = await AgentRunRequestRepository(db).get_by_request_id(request_id)
     existing_run = await AgentRunRepository(db).get_run_by_request_id(request_id)
-    if existing_run:
+    if existing_run and not existing_request:
         if existing_run.uid != str(current_user.uid):
             raise HTTPException(status_code=409, detail="request_id 冲突")
         if existing_run.agent_slug != agent_item.slug or existing_run.run_type != "chat":
@@ -230,7 +232,18 @@ async def create_agent_invocation_run_view(
             "request_events_url": None,
         }
 
-    resolved_thread_id = requested_thread_id or str(uuid.uuid4())
+    source = str(invocation_metadata["source"])
+    # uid/agent_slug/source/queue_policy 冲突由下方 intake_request 的既有请求校验统一兜底；
+    # thread 一旦命中既有请求就会被强制改写，此处必须提前拦截显式 thread 冲突。
+    if existing_request and requested_thread_id and existing_request.conversation_thread_id != requested_thread_id:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "request_id_conflict", "message": "request_id 已用于其他请求作用域"},
+        )
+
+    resolved_thread_id = (
+        existing_request.conversation_thread_id if existing_request else requested_thread_id or str(uuid.uuid4())
+    )
 
     conv_repo = ConversationRepository(db)
     conversation = await conv_repo.get_conversation_by_thread_id(resolved_thread_id)
@@ -262,7 +275,7 @@ async def create_agent_invocation_run_view(
         uid=str(current_user.uid),
         agent_slug=agent_item.slug,
         thread_id=resolved_thread_id,
-        source=str(invocation_metadata["source"]),
+        source=source,
         queue_policy=queue_policy,
         input_message=input_message,
         agent_item=agent_item,
@@ -280,7 +293,7 @@ async def create_agent_invocation_run_view(
         "queue_position": intake.queue_position,
         "message_id": intake.message_id,
         "run_id": intake.run_id,
-        "thread_id": resolved_thread_id,
+        "thread_id": intake.thread_id,
         "request_events_url": (
             f"/api/agent/requests/{intake.request_id}/events" if intake.status == "queued" else None
         ),

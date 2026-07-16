@@ -17,6 +17,15 @@ class _NoExistingRunRepo:
         return None
 
 
+class _NoExistingRequestRepo:
+    def __init__(self, db):
+        self.db = db
+
+    async def get_by_request_id(self, request_id: str):
+        del request_id
+        return None
+
+
 @pytest.mark.asyncio
 async def test_create_agent_invocation_run_creates_invocation_metadata(monkeypatch: pytest.MonkeyPatch):
     calls: dict[str, object] = {}
@@ -62,6 +71,7 @@ async def test_create_agent_invocation_run_creates_invocation_metadata(monkeypat
             queue_position=0,
             message_id=1,
             run_id="run-1",
+            thread_id="thread-1",
         )
 
     async def fake_enqueue_agent_run(*, db, intake):
@@ -70,6 +80,7 @@ async def test_create_agent_invocation_run_creates_invocation_metadata(monkeypat
 
     monkeypatch.setattr(svc, "AgentRepository", AgentRepo)
     monkeypatch.setattr(svc, "AgentRunRepository", _NoExistingRunRepo)
+    monkeypatch.setattr(svc, "AgentRunRequestRepository", _NoExistingRequestRepo)
     monkeypatch.setattr(svc, "ConversationRepository", ConvRepo)
     monkeypatch.setattr(svc.agent_manager, "get_agent", lambda _backend_id: object())
     monkeypatch.setattr(svc, "intake_request", fake_intake_request)
@@ -103,6 +114,71 @@ async def test_create_agent_invocation_run_creates_invocation_metadata(monkeypat
     assert result["status"] == "dispatched"
     assert calls["committed"] is True
     assert calls["enqueued"] == "run-1"
+
+
+@pytest.mark.asyncio
+async def test_create_agent_invocation_run_rejects_existing_request_from_explicit_other_thread(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    current_user = SimpleNamespace(uid="user-1", role="user")
+
+    class AgentRepo:
+        def __init__(self, db):
+            del db
+
+        async def get_visible_by_slug(self, *, slug: str, user, kind="main"):
+            del user, kind
+            return SimpleNamespace(slug=slug, backend_id="ChatbotAgent")
+
+    class ExistingRequestRepo:
+        def __init__(self, db):
+            del db
+
+        async def get_by_request_id(self, request_id: str):
+            assert request_id == "req-1"
+            return SimpleNamespace(
+                uid="user-1",
+                agent_slug="translator",
+                conversation_thread_id="persisted-thread",
+                source="agent_call",
+                queue_policy="enqueue",
+            )
+
+    class NoExistingRunRepo:
+        def __init__(self, db):
+            del db
+
+        async def get_run_by_request_id(self, request_id: str):
+            assert request_id == "req-1"
+            return None
+
+    class FailConversationRepo:
+        def __init__(self, db):
+            del db
+
+        async def get_conversation_by_thread_id(self, thread_id: str):
+            raise AssertionError(f"scope conflict must fail before conversation lookup: {thread_id}")
+
+    monkeypatch.setattr(svc, "AgentRepository", AgentRepo)
+    monkeypatch.setattr(svc, "AgentRunRequestRepository", ExistingRequestRepo)
+    monkeypatch.setattr(svc, "AgentRunRepository", NoExistingRunRepo)
+    monkeypatch.setattr(svc, "ConversationRepository", FailConversationRepo)
+
+    with pytest.raises(HTTPException) as exc:
+        await svc.create_agent_invocation_run_view(
+            agent_slug="translator",
+            input_message=build_chat_input_message("Hello World"),
+            invocation_metadata={"source": "agent_call"},
+            requested_thread_id="requested-thread",
+            request_id="req-1",
+            model_spec=None,
+            current_user=current_user,
+            db=object(),
+            conversation_title="Agent Call Run",
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "request_id_conflict"
 
 
 @pytest.mark.asyncio
@@ -150,6 +226,7 @@ async def test_create_agent_call_run_does_not_commit_conversation_before_run_cre
 
     monkeypatch.setattr(svc, "AgentRepository", AgentRepo)
     monkeypatch.setattr(svc, "AgentRunRepository", _NoExistingRunRepo)
+    monkeypatch.setattr(svc, "AgentRunRequestRepository", _NoExistingRequestRepo)
     monkeypatch.setattr(svc, "ConversationRepository", ConvRepo)
     monkeypatch.setattr(svc.agent_manager, "get_agent", lambda _backend_id: object())
     monkeypatch.setattr(svc, "intake_request", fake_intake_request)

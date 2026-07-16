@@ -334,7 +334,7 @@ async def create_agent_run(
         "request_events_url": (
             f"/api/agent/requests/{result.request_id}/events" if result.status == "queued" else None
         ),
-        "thread_id": payload.thread_id,
+        "thread_id": result.thread_id,
     }
 
 

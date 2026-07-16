@@ -428,6 +428,8 @@ async def create_agent_run_view(
         created_by_run_id=run_created_by_id,
     )
     if scope.existing_run:
+        if scope.existing_run.status == "pending":
+            await _commit_and_enqueue(db, scope.existing_run.id)
         return _build_run_response(scope.existing_run)
 
     if run_type == "resume":
@@ -475,10 +477,14 @@ async def create_agent_run_view(
         created_by_run_id=run_created_by_id,
     )
     if created:
-        await db.commit()
-        await enqueue_agent_run(run.id)
+        await _commit_and_enqueue(db, run.id)
 
     return _build_run_response(run)
+
+
+async def _commit_and_enqueue(db: AsyncSession, run_id: str) -> None:
+    await db.commit()
+    await enqueue_agent_run(run_id)
 
 
 @dataclass(frozen=True)
@@ -662,7 +668,7 @@ async def prepare_agent_run_creation_scope(
     if not conversation_thread_id:
         raise HTTPException(status_code=422, detail="conversation_thread_id 不能为空")
 
-    conversation = await ConversationRepository(db).get_conversation_by_thread_id(conversation_thread_id)
+    conversation = await ConversationRepository(db).lock_conversation_by_thread_id(conversation_thread_id)
     if not conversation or conversation.uid != str(current_uid) or conversation.status == "deleted":
         raise HTTPException(status_code=404, detail="对话线程不存在")
     # Conversation.agent_id 是历史字段名，实际保存的是 Agent.slug。
