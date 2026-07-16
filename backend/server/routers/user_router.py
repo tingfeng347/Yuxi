@@ -263,27 +263,6 @@ async def delete_api_key(
     return {"success": True}
 
 
-@user_router.post("/apikey/{api_key_id}/regenerate", response_model=APIKeyCreateResponse)
-async def regenerate_api_key(
-    api_key_id: int,
-    current_user: User = Depends(get_required_user),
-    db: AsyncSession = Depends(get_db),
-):
-    api_key = await get_accessible_api_key(db, api_key_id, current_user)
-
-    full_key, key_hash, key_prefix = AuthUtils.generate_api_key()
-    api_key.key_hash = key_hash
-    api_key.key_prefix = key_prefix
-
-    await db.commit()
-    await db.refresh(api_key)
-
-    return APIKeyCreateResponse(
-        api_key=APIKeyResponse(**api_key.to_dict()),
-        secret=full_key,
-    )
-
-
 @user_router.get("/agent-env", response_model=AgentEnvResponse)
 async def get_agent_env(
     current_user: User = Depends(get_required_user),

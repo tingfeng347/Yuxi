@@ -64,29 +64,21 @@
                   <a-switch :checked="key.is_enabled" size="small" @change="toggleEnabled(key)" />
                 </div>
                 <div class="footer-actions">
-                  <a-tooltip title="重新生成（获取完整密钥）">
-                    <a-button
-                      type="text"
-                      size="small"
-                      @click="regenerateKey(key)"
-                      class="action-btn lucide-icon-btn"
-                    >
-                      <RefreshCw :size="14" />
-                      <span>重新生成</span>
-                    </a-button>
-                  </a-tooltip>
                   <a-popconfirm
                     title="确定要删除此 API Key 吗？此操作不可恢复。"
                     @confirm="deleteKey(key)"
                     ok-text="确定"
                     cancel-text="取消"
                   >
-                    <a-tooltip title="删除">
-                      <a-button type="text" size="small" danger class="action-btn lucide-icon-btn">
-                        <Trash2 :size="14" />
-                        <span>删除</span>
-                      </a-button>
-                    </a-tooltip>
+                    <a-button
+                      type="text"
+                      size="small"
+                      danger
+                      class="action-btn delete-action-btn lucide-icon-btn"
+                    >
+                      <Trash2 :size="14" />
+                      <span>删除</span>
+                    </a-button>
                   </a-popconfirm>
                 </div>
               </div>
@@ -247,17 +239,6 @@ const copySecret = async () => {
     message.success('已复制到剪贴板')
   } catch {
     message.error('复制失败')
-  }
-}
-
-const regenerateKey = async (key) => {
-  try {
-    const res = await apikeyApi.regenerate(key.id)
-    createdSecret.value = res.secret
-    secretModalVisible.value = true
-    await loadApiKeys()
-  } catch (e) {
-    message.error(e.message || '重新生成失败')
   }
 }
 
@@ -467,6 +448,11 @@ onMounted(() => {
 
             &:hover {
               color: var(--main-600);
+            }
+
+            &.delete-action-btn:hover {
+              color: var(--color-error-700);
+              background: var(--color-error-50);
             }
           }
         }

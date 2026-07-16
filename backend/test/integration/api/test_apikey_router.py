@@ -94,21 +94,9 @@ async def test_delete_api_key(test_client, admin_headers):
     assert get_response.status_code == 404
 
 
-async def test_regenerate_api_key(test_client, admin_headers):
-    """Admin should be able to regenerate an API key."""
-    # Create a key
-    create_response = await test_client.post(API_KEYS_PATH, json={"name": "Regenerate Test"}, headers=admin_headers)
-    assert create_response.status_code == 200
-    original_secret = create_response.json()["secret"]
-    created = create_response.json()["api_key"]
-
-    # Regenerate it
-    response = await test_client.post(f"{API_KEYS_PATH}{created['id']}/regenerate", headers=admin_headers)
-    assert response.status_code == 200, response.text
-    data = response.json()
-    assert "secret" in data
-    assert data["secret"] != original_secret
-    assert data["api_key"]["key_prefix"] != original_secret[:12]
+async def test_regenerate_api_key_endpoint_is_removed(test_client, admin_headers):
+    response = await test_client.post(f"{API_KEYS_PATH}1/regenerate", headers=admin_headers)
+    assert response.status_code == 404, response.text
 
 
 async def test_api_key_auth_protected_endpoint(test_client, admin_headers):

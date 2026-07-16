@@ -11,7 +11,5 @@ export const apikeyApi = {
 
   update: (id, data) => apiPut(`${API_KEY_BASE_PATH}/${id}`, data),
 
-  delete: (id) => apiDelete(`${API_KEY_BASE_PATH}/${id}`),
-
-  regenerate: (id) => apiPost(`${API_KEY_BASE_PATH}/${id}/regenerate`)
+  delete: (id) => apiDelete(`${API_KEY_BASE_PATH}/${id}`)
 }
