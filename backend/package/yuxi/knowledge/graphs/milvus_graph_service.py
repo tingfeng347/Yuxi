@@ -568,6 +568,7 @@ class MilvusGraphService:
                 "limit": limit,
             }
             if max_depth > 0:
+                max_depth = min(max_depth, 3)
                 query_params["path_limit"] = max(limit, 1) * 10
             result = session.run(
                 self._build_query(label, keyword, limit, max_depth, exclude_chunk),

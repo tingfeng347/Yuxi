@@ -382,6 +382,29 @@ def test_milvus_graph_service_query_nodes_sync_returns_complete_multi_hop_path()
     assert query_params["path_limit"] == 30
 
 
+def test_milvus_graph_service_query_nodes_sync_caps_max_depth():
+    query_result = MagicMock()
+    query_result.single.return_value = None
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.run.return_value = query_result
+    driver = MagicMock()
+    driver.session.return_value = session
+    service = MilvusGraphService(neo4j_connection=SimpleNamespace(driver=driver))
+
+    service._query_nodes_sync(
+        "kb_test",
+        "kb_test",
+        "node-a",
+        limit=3,
+        max_depth=100,
+        exclude_chunk=False,
+    )
+
+    query, _ = session.run.call_args
+    assert "[*1..3]" in query[0]
+
+
 @pytest.mark.asyncio
 async def test_milvus_graph_service_query_nodes_empty_kb_id():
     service = MilvusGraphService()
